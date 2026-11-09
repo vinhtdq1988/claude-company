@@ -1,0 +1,20 @@
+{
+  "name": "@claude-company/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --import @swc-node/register/esm-register src/main.ts",
+    "start": "node --import @swc-node/register/esm-register src/main.ts"
+  },
+  "dependencies": {
+    "@claude-company/api": "workspace:*",
+    "@claude-company/contracts": "workspace:*",
+    "@nestjs/common": "^11.2.9",
+    "@nestjs/core": "^11.2.9",
+    "@swc-node/register": "^1.12.1",
+    "@swc/core": "^1.16.22",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  }
+}

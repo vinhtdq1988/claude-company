@@ -1,0 +1,27 @@
+{
+  "name": "@claude-company/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@claude-company/contracts": "workspace:*",
+    "@claude-company/policy": "workspace:*",
+    "@tanstack/react-query": "^5.107.1",
+    "pixi.js": "^8.22.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "^8.5.1",
+    "socket.io-client": "^4.8.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "vite": "^8.3.6"
+  }
+}

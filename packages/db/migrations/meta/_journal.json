@@ -1,0 +1,48 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1794223449546,
+      "tag": "0000_roles_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794223486454,
+      "tag": "0001_core_tenancy",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794223496132,
+      "tag": "0002_domain_event",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794223961803,
+      "tag": "0003_action_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794225939204,
+      "tag": "0004_organization_structure",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794227216258,
+      "tag": "0005_ai_employee_model_price",
+      "breakpoints": true
+    }
+  ]
+}

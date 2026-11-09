@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+coverage/
+playwright-report/
+test-results/
+pnpm-lock.yaml
+packages/db/migrations/
+ref/
+.specify/
+.claude/
+specs/
+docker/data/
+pnpm-workspace.yaml

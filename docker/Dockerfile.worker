@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1
+# Build context là gốc repo: docker build -f docker/Dockerfile.worker .
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-slim AS base
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
+RUN npm install -g pnpm@12.18.0
+WORKDIR /app
+
+# --- Cài dependency (tận dụng cache layer) ---
+FROM base AS deps
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* tsconfig.base.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/worker/package.json apps/worker/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/policy/package.json packages/policy/package.json
+COPY packages/db/package.json packages/db/package.json
+COPY packages/model-gateway/package.json packages/model-gateway/package.json
+RUN pnpm install --frozen-lockfile --filter @claude-company/worker...
+
+# --- Runtime ---
+FROM base AS runtime
+ENV NODE_ENV=production
+# Worker tạo git worktree cho từng run nên cần git.
+RUN apt-get update \n && apt-get install -y --no-install-recommends git \n && rm -rf /var/lib/apt/lists/*
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps ./apps
+COPY --from=deps /app/packages ./packages
+COPY package.json pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/api ./apps/api
+COPY apps/worker ./apps/worker
+COPY packages ./packages
+USER node
+WORKDIR /app/apps/worker
+CMD ["pnpm", "start"]

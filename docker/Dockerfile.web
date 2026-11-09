@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+ARG NODE_VERSION=24
+
+FROM node:${NODE_VERSION}-slim AS build
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
+RUN npm install -g pnpm@12.18.0
+WORKDIR /app
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml* tsconfig.base.json ./
+COPY apps/web/package.json apps/web/package.json
+COPY packages/contracts/package.json packages/contracts/package.json
+RUN pnpm install --frozen-lockfile --filter @claude-company/web...
+COPY apps/web ./apps/web
+COPY packages/contracts ./packages/contracts
+RUN pnpm --filter @claude-company/web build
+
+# nginx-unprivileged chạy bằng user không phải root, lắng nghe cổng 8080.
+FROM nginxinc/nginx-unprivileged:stable-alpine AS runtime
+COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+EXPOSE 8080

@@ -1,0 +1,18 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+minimumReleaseAgeExclude:
+  - "@nestjs/common@11.2.9"
+  - "@nestjs/core@11.2.9"
+  - "@nestjs/platform-express@11.2.9"
+  - "@nestjs/testing@11.2.9"
+  - "@vitejs/plugin-react@6.3.0"
+allowBuilds:
+  '@swc/core': true
+  cpu-features: false
+  esbuild: true
+  protobufjs: false
+  ssh2: false
+  argon2: true
+  msgpackr-extract: false
+  tree-sitter-bash: false

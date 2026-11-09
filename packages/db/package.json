@@ -1,0 +1,27 @@
+{
+  "name": "@claude-company/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema/*": "./src/schema/*.ts"
+  },
+  "scripts": {
+    "db:migrate": "tsx src/migrate.ts",
+    "db:seed": "tsx src/seed.ts"
+  },
+  "dependencies": {
+    "@claude-company/contracts": "workspace:*",
+    "@opentelemetry/api": "^1.10.0",
+    "drizzle-orm": "^0.45.4",
+    "pg": "^8.23.1",
+    "uuidv7": "^1.2.1"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11"
+  }
+}

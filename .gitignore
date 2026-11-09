@@ -1,0 +1,39 @@
+# Dependencies và build
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Secret và cấu hình cục bộ
+.env
+.env.*
+!.env.example
+docker/.env
+!docker/.env.example
+
+# Dữ liệu cục bộ (MinIO, PostgreSQL, Redis, worktree của run)
+docker/data/
+.data/
+minio-data/
+postgres-data/
+redis-data/
+run_worktrees/
+
+# Kết quả test
+playwright-report/
+test-results/
+blob-report/
+
+# Log và tệp tạm
+*.log
+*.tmp
+*.swp
+
+# Hệ điều hành và IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
