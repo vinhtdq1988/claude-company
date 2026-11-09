@@ -1,56 +1,182 @@
-// Type khung; US7 (T179) thay bằng Zod schema Run.
+import { z } from 'zod';
+import type { ScopeRef } from './common';
+import type { NotificationType } from './task';
+import type { RuntimeKind } from './employee';
+
+export const RUN_PURPOSES = ['execute', 'decompose', 'review', 'synthesize'] as const;
+export const runPurposeSchema = z.enum(RUN_PURPOSES);
+export type RunPurpose = z.infer<typeof runPurposeSchema>;
+
+export const RUN_STATUSES = [
+  'queued',
+  'running',
+  'waiting_approval',
+  'succeeded',
+  'failed',
+  'timed_out',
+  'cancelled',
+] as const;
+export type RunStatus = (typeof RUN_STATUSES)[number];
+
+/** Run đã kết thúc: không nhận cập nhật trạng thái nữa. */
+export const FINAL_RUN_STATUSES: readonly RunStatus[] = [
+  'succeeded',
+  'failed',
+  'timed_out',
+  'cancelled',
+];
+
 export type AgentRunRef = { runId: string };
+
 export type AgentRunSummary = {
   id: string;
   taskId: string;
   employeeId: string;
-  status: string;
-  purpose: string;
+  purpose: RunPurpose;
+  attempt: number;
+  status: RunStatus;
+  runtimeKind: RuntimeKind;
+  modelId: string;
+  providerSessionId: string | null;
   startedAt: string | null;
-  endedAt: string | null;
+  finishedAt: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  traceId: string;
+  createdAt: string;
 };
-export type AgentRunDetail = AgentRunSummary & { steps: unknown[]; toolInvocations: unknown[] };
+
+export type RunStepKind = 'model_call' | 'tool_call' | 'message' | 'system';
+
+export type RunStep = {
+  id: string;
+  seq: number;
+  kind: RunStepKind;
+  summary: string;
+  payload: unknown;
+  startedAt: string;
+  finishedAt: string | null;
+};
+
+export type ToolInvocationStatus =
+  | 'denied'
+  | 'pending_approval'
+  | 'pending'
+  | 'executing'
+  | 'succeeded'
+  | 'failed'
+  | 'unknown';
+
+export type AdapterMode = 'dry_run' | 'live';
+
+export type ToolInvocation = {
+  id: string;
+  runStepId: string | null;
+  actionType: string;
+  permissionLevel: string;
+  input: unknown;
+  inputHash: string;
+  idempotencyKey: string;
+  status: ToolInvocationStatus;
+  adapterMode: AdapterMode | null;
+  result: unknown;
+  createdAt: string;
+};
+
+export type AgentRunDetail = AgentRunSummary & {
+  steps: RunStep[];
+  toolInvocations: ToolInvocation[];
+};
+
 export type AgentRunStatusPatch = {
-  status?: string;
-  error?: { code: string; message: string };
-  sessionId?: string;
+  status?: RunStatus;
+  errorCode?: string;
+  errorMessage?: string;
+  providerSessionId?: string;
 };
-export type RunStepInput = { kind: string; payload?: unknown };
+
+export type RunStepInput = {
+  kind: RunStepKind;
+  summary: string;
+  /** Đã che secret ở phía gọi (`redact.ts`). */
+  payload?: unknown;
+  startedAt?: string;
+  finishedAt?: string;
+};
 export type RunStepRef = { id: string; seq: number };
+
 export type ToolInvocationInput = {
   runId: string;
-  stepSeq: number;
+  runStepId?: string;
   actionType: string;
+  permissionLevel: string;
   input: unknown;
+  inputHash: string;
   idempotencyKey: string;
-  level: string;
+  status: ToolInvocationStatus;
+  adapterMode?: AdapterMode;
+  result?: unknown;
 };
-export type ToolInvocationPatch = { status?: string; output?: unknown; error?: string };
+export type ToolInvocationPatch = {
+  status?: ToolInvocationStatus;
+  result?: unknown;
+  adapterMode?: AdapterMode;
+};
+/** Sự kiện run/tiến độ do worker báo, được OrchestrationEngine ghi thành `domain_event`. */
+export type RunEventInput =
+  | { type: 'model_call_started' }
+  | { type: 'tool_call_started'; tool: string }
+  | { type: 'progress'; progress: number }
+  | { type: 'usage'; tokensDelta: number; costDelta: number };
+
 export type RecoveryReport = { recovered: number; failed: number };
+
 export type ExecutedAction = {
   toolInvocationId: string;
   actionType: string;
-  adapterMode: 'dry_run' | 'live';
-  status: string;
+  adapterMode: AdapterMode;
+  status: ToolInvocationStatus;
   executedAt: string;
 };
-export type MemoryEntry = { id: string; content: string };
-export type MemoryEntryInput = { employeeId: string; taskId: string; content: string };
-export type TaskMessage = {
+
+export type MemoryEntry = {
   id: string;
-  taskId: string;
-  authorKind: 'human' | 'ai';
-  authorId: string;
-  body: string;
+  ownerScopeKind: 'ai_employee' | 'team' | 'org_unit';
+  ownerScopeId: string;
+  sourceTaskId: string | null;
+  kind: 'task_summary' | 'note';
+  content: string;
   createdAt: string;
 };
+export type MemoryEntryInput = {
+  ownerScopeKind: 'ai_employee' | 'team' | 'org_unit';
+  ownerScopeId: string;
+  sourceTaskId?: string;
+  kind: 'task_summary' | 'note';
+  content: string;
+  /** null/bỏ trống = không chia sẻ ngoài scope (FR-013). */
+  shareRule?: Record<string, unknown> | null;
+};
+
 export type NotificationInput = {
-  type: string;
+  type: NotificationType;
   title: string;
   body?: string;
   taskId?: string;
   approvalRequestId?: string;
 };
+
+/** Thông báo cần định tuyến: ngữ cảnh đủ để chọn người nhận theo FR-041. */
+export type RoutedNotification = NotificationInput & {
+  /** `overload_warning`: nhân viên quá tải. */
+  employeeId?: string;
+  /** `budget_warning`: phạm vi bị chạm ngưỡng. */
+  scope?: ScopeRef;
+  /** `approval_needed`: người duyệt của approval request. */
+  approverMemberId?: string;
+};
+
+/** Kết quả một lời gọi tool trả về cho agent. */
 export type ToolResult = {
   status: 'ok' | 'pending_approval' | 'run_locked' | 'denied' | 'error';
   output?: unknown;

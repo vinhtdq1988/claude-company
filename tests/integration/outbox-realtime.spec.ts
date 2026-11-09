@@ -155,11 +155,11 @@ describe('Outbox, event bus và realtime gateway (T037, T038; FR-037, D2)', () =
           taskId: 'task-1',
           from: 'draft',
           to: 'assigned',
-          assigneeKind: 'ai',
+          assigneeKind: 'ai_employee',
           assigneeId: hiddenEmployee,
           isOverdue: false,
         },
-        visibility: { kind: 'assignee', assigneeKind: 'ai', assigneeId: hiddenEmployee },
+        visibility: { kind: 'assignee', assigneeKind: 'ai_employee', assigneeId: hiddenEmployee },
       },
       {
         room: 'user',

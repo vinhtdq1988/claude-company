@@ -1,8 +1,12 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { CommunicationModule } from './engines/communication/communication.module';
 import { EmployeeModule } from './engines/employee/employee.module';
+import { MemoryModule } from './engines/memory/memory.module';
+import { OrchestrationModule } from './engines/orchestration/orchestration.module';
 import { OrganizationModule } from './engines/organization/organization.module';
 import { PermissionModule } from './engines/permission/permission.module';
+import { TaskModule } from './engines/task/task.module';
 import { ScopeGuard } from './engines/permission/scope.guard';
 import { CsrfGuard } from './platform/auth/csrf.guard';
 import { SessionGuard } from './platform/auth/session.guard';
@@ -20,6 +24,10 @@ import { TenantGuard } from './platform/tenancy/tenant.guard';
     PermissionModule,
     EmployeeModule,
     OrganizationModule,
+    TaskModule,
+    CommunicationModule,
+    MemoryModule,
+    OrchestrationModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: SessionGuard },

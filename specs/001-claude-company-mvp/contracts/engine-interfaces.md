@@ -28,6 +28,10 @@ interface OrganizationEngine {
   /** Phạm vi quản lý đã mở rộng (đơn vị con, team, nhân viên, gồm nhân viên có manager_kind = human trỏ tới member này). Dùng bởi ScopeGuard. */
   resolveManagedScope(ctx, memberId: string): Promise<ManagedScope>;
   isInScope(ctx, memberId: string, target: ScopeRef): Promise<boolean>;
+  /** Đơn vị chưa archived, hoặc null. EmployeeEngine dùng để kiểm tra `home_org_unit_id` (US2). */
+  getOrgUnit(ctx, id: string): Promise<OrgUnit | null>;
+  /** Quan hệ thành viên-team của team chưa archived. EmployeeEngine dùng để tính `teamIds` và lọc theo team (US2). */
+  listTeamMemberships(ctx): Promise<Array<{ teamId: string; memberKind: "ai" | "human"; memberId: string }>>;
 }
 ```
 
@@ -52,6 +56,14 @@ interface EmployeeEngine {
   deactivateHumanMember(ctx, memberId): Promise<void>;        // MANAGEMENT_CHAIN_INVALID
 }
 ```
+
+Quy ước bổ sung của US2:
+
+- `list` mặc định loại nhân viên `archived` (lọc `status: "archived"` để xem); không lọc theo phạm vi quản lý vì `OrganizationEngine.resolveManagedScope` cũng gọi `list`. Controller lọc theo `ManagedScope` của người xem.
+- `list` chỉ tính `performance` (gọi `TaskEngine.getStats`) khi `filter.withPerformance = true`; `get` luôn tính.
+- `getCapacity.active` đếm task của nhân viên ở trạng thái `in_progress`; run `decompose`, `review`, `synthesize` không chiếm slot.
+- `EmployeeEngine` lấy `OrganizationEngine` muộn qua `ModuleRef` vì `OrganizationEngine` cũng phụ thuộc `EmployeeEngine`.
+- `archive` gỡ nhân viên khỏi mọi Team; bị chặn khi còn task chưa kết thúc (`EMPLOYEE_HAS_OPEN_TASKS`) hoặc khi AI Manager còn cấp dưới (`MANAGEMENT_CHAIN_INVALID`).
 
 `EmployeeProfile` (hợp đồng Nguyên tắc VI): `{ id, name, avatarKey, position, homeOrgUnitId, teamIds, kind, roleTemplateKey, personality, skills, seniority, modelId, runtimeKind, systemPrompt, toolGrants, workspaceId, manager: {kind,id}, maxConcurrentTasks, status, performance: { completedTasks, onTimeRate, reworkRate } }`.
 

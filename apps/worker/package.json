@@ -10,11 +10,16 @@
   "dependencies": {
     "@claude-company/api": "workspace:*",
     "@claude-company/contracts": "workspace:*",
+    "@claude-company/model-gateway": "workspace:*",
+    "@claude-company/policy": "workspace:*",
     "@nestjs/common": "^11.2.9",
     "@nestjs/core": "^11.2.9",
     "@swc-node/register": "^1.12.1",
     "@swc/core": "^1.16.22",
+    "bullmq": "^6.7.2",
+    "ioredis": "^6.0.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.2"
+    "rxjs": "^7.8.2",
+    "zod": "^4.6.7"
   }
 }

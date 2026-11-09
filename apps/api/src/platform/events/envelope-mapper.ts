@@ -5,7 +5,7 @@ import type { DomainEvent, RealtimeEventType } from '@claude-company/contracts';
 export type Visibility =
   | { kind: 'all' }
   | { kind: 'employee'; employeeId: string }
-  | { kind: 'assignee'; assigneeKind: 'ai' | 'human'; assigneeId: string };
+  | { kind: 'assignee'; assigneeKind: 'ai_employee' | 'team' | 'org_unit'; assigneeId: string };
 
 export type EnvelopeSpec =
   | { room: 'company'; type: RealtimeEventType; payload: unknown; visibility: Visibility }

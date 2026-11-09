@@ -15,9 +15,14 @@ export function canView(viewer: SocketViewer, visibility: Visibility): boolean {
     case 'employee':
       return viewer.scope.employeeIds.includes(visibility.employeeId);
     case 'assignee':
-      return visibility.assigneeKind === 'ai'
-        ? viewer.scope.employeeIds.includes(visibility.assigneeId)
-        : visibility.assigneeId === viewer.memberId;
+      switch (visibility.assigneeKind) {
+        case 'ai_employee':
+          return viewer.scope.employeeIds.includes(visibility.assigneeId);
+        case 'team':
+          return viewer.scope.teamIds.includes(visibility.assigneeId);
+        case 'org_unit':
+          return viewer.scope.orgUnitIds.includes(visibility.assigneeId);
+      }
   }
 }
 

@@ -10,11 +10,13 @@ import {
   TASK_ENGINE,
 } from '../../apps/api/src/platform/engine-tokens';
 import { loadConfig, type AppConfig } from '../../apps/api/src/platform/config/config';
-import { CONFIG, DATABASE } from '../../apps/api/src/platform/config/infra.providers';
+import { CONFIG, DATABASE, REDIS } from '../../apps/api/src/platform/config/infra.providers';
 import { StorageService } from '../../apps/api/src/platform/storage/storage.service';
 import { QueueService } from '../../apps/api/src/platform/queue/queues';
+import { RealtimeGateway } from '../../apps/api/src/platform/realtime/realtime.gateway';
 import { WorkerModule } from '../../apps/worker/src/worker.module';
 import type { StartedInfra } from './containers';
+import { FakeRedis, InProcessQueue } from './flow-harness';
 import { TenantProbeModule } from './tenant-probe.controller';
 
 export type EngineOverrides = {
@@ -37,6 +39,11 @@ export interface CreateTestAppOptions {
   modelGateway?: unknown;
   /** Mặc định đăng ký route thử tenant. */
   tenantProbe?: boolean;
+  /**
+   * Không cần Redis: phiên/khóa dùng Redis giả, hàng đợi chạy trong bộ nhớ, gateway realtime tắt.
+   * Dành cho test chỉ cần REST + PostgreSQL (máy không có Docker); test realtime vẫn dùng Redis thật.
+   */
+  inMemory?: boolean;
 }
 
 export interface TestApp {
@@ -50,13 +57,17 @@ export interface TestApp {
   close(): Promise<void>;
 }
 
-export function buildTestConfig(infra: StartedInfra, env: Record<string, string> = {}): AppConfig {
+export function buildTestConfig(
+  infra: StartedInfra,
+  env: Record<string, string> = {},
+  inMemory = false,
+): AppConfig {
   if (!infra.databaseUrl) throw new Error('Gọi prepareDatabase(infra) trước createTestApp');
-  if (!infra.redisUrl) throw new Error('Cần bật redis trong startInfra');
+  if (!infra.redisUrl && !inMemory) throw new Error('Cần bật redis trong startInfra');
   return loadConfig({
     NODE_ENV: 'test',
     DATABASE_URL: infra.databaseUrl,
-    REDIS_URL: infra.redisUrl,
+    REDIS_URL: infra.redisUrl ?? 'redis://127.0.0.1:1',
     SESSION_SECRET: 'test-session-secret-test-session-secret',
     S3_ENDPOINT: infra.s3Endpoint ?? 'http://localhost:9000',
     S3_BUCKET: 'test-artifacts',
@@ -85,6 +96,11 @@ function applyOverrides(
   o: CreateTestAppOptions,
 ): TestingModuleBuilder {
   builder.overrideProvider(CONFIG).useValue(config);
+  if (o.inMemory) {
+    builder.overrideProvider(REDIS).useValue(new FakeRedis());
+    builder.overrideProvider(QueueService).useValue(new InProcessQueue());
+    builder.overrideProvider(RealtimeGateway).useValue({});
+  }
   if (!o.infra.minio) builder.overrideProvider(StorageService).useValue(noopStorage);
   if (o.overrides?.organization)
     builder.overrideProvider(ORGANIZATION_ENGINE).useValue(o.overrides.organization);
@@ -95,8 +111,10 @@ function applyOverrides(
 }
 
 /** Dựng API (và worker nếu cần) trên hạ tầng test, dùng đúng AppModule của sản phẩm. */
-export async function createTestApp(options: CreateTestAppOptions): Promise<TestApp> {
-  const config = buildTestConfig(options.infra, options.env);
+export async function createTestApp(input: CreateTestAppOptions): Promise<TestApp> {
+  // `TEST_INMEMORY=1` ép mọi test dùng Redis giả (máy không có Docker/Redis); test realtime vẫn cần Redis thật.
+  const options = { ...input, inMemory: input.inMemory ?? process.env.TEST_INMEMORY === '1' };
+  const config = buildTestConfig(options.infra, options.env, options.inMemory);
   const imports: Array<typeof AppModule | typeof TenantProbeModule> = [AppModule];
   if (options.tenantProbe !== false) imports.push(TenantProbeModule);
 
@@ -136,10 +154,12 @@ export async function createTestApp(options: CreateTestAppOptions): Promise<Test
     url: (path) => `/${API_PREFIX}${path.startsWith('/') ? path : `/${path}`}`,
     async close() {
       await worker?.close();
-      await app
-        .get(QueueService)
-        .queue.close()
-        .catch(() => undefined);
+      if (!options.inMemory) {
+        await app
+          .get(QueueService)
+          .queue.close()
+          .catch(() => undefined);
+      }
       await app.close();
       await closeDatabase().catch(() => undefined);
     },

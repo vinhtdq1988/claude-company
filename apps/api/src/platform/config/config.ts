@@ -34,6 +34,8 @@ const envSchema = z
     ANTHROPIC_API_KEY: z.string().optional(),
     ADAPTER_MODE: z.enum(['dry_run', 'live']).default('dry_run'),
     WORKSPACE_HOST_PATH: z.string().default('./data/workspaces'),
+    /** Thư mục chứa `/worktrees/{runId}` (volume `run_worktrees`). */
+    RUN_WORKTREES_PATH: z.string().default('./data/worktrees'),
 
     BUDGET_WARN_THRESHOLD: z.coerce.number().min(0).max(1).default(0.8),
     MAX_REWORK: z.coerce.number().int().min(0).default(3),
@@ -55,6 +57,13 @@ const envSchema = z
       .int()
       .positive()
       .default(5 * 60_000),
+    /** `false`: worker không nhận job BullMQ (chỉ chạy sweeper), dùng khi tách tiến trình hoặc trong test. */
+    WORKER_CONSUME_JOBS: bool.default(true),
+    /** Chu kỳ worker gửi heartbeat của run (ms) và ngưỡng coi run `running` là đã chết (ms). */
+    RUN_HEARTBEAT_INTERVAL_MS: z.coerce.number().int().positive().default(5_000),
+    RUN_STALE_AFTER_MS: z.coerce.number().int().positive().default(60_000),
+    /** Chu kỳ sweeper (task quá hạn, phục hồi run); 0 tắt sweeper tự chạy (test gọi thủ công). */
+    SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
     APPROVAL_REMINDER_FIRST_MS: z.coerce.number().int().positive().default(3_600_000),
     APPROVAL_REMINDER_REPEAT_MS: z.coerce
       .number()

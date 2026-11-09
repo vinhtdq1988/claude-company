@@ -16,6 +16,7 @@ import {
   type RoleTemplate,
   type TaskEngine,
   type TaskStatus,
+  type Workspace,
   roleTemplateDefaultsSchema,
 } from '@claude-company/contracts';
 import { newId, withGlobal, type Tx } from '@claude-company/db';
@@ -93,6 +94,18 @@ export class EmployeeService implements EmployeeEngine {
     'getOrgUnit' | 'listTeamMemberships' | 'setTeamMembers'
   > {
     return this.moduleRef.get<OrganizationEngine>(ORGANIZATION_ENGINE, { strict: false });
+  }
+
+  async getWorkspace(ctx: RequestContext, id: string): Promise<Workspace> {
+    const row = await inTenant(ctx, (tx) => this.repo.findWorkspace(tx, ctx.companyId, id));
+    if (!row) throw new DomainError('NOT_FOUND', 'Không tìm thấy workspace');
+    return {
+      id: row.id,
+      name: row.name,
+      kind: row.kind,
+      mountPath: row.mountPath,
+      defaultBranch: row.defaultBranch,
+    };
   }
 
   // --- tạo, sửa ---
@@ -256,7 +269,7 @@ export class EmployeeService implements EmployeeEngine {
       const current = await this.requireActive(tx, ctx, id);
 
       const openTasks = await this.tasks.list(ctx, {
-        assigneeKind: 'ai',
+        assigneeKind: 'ai_employee',
         assigneeId: id,
         statusIn: OPEN_TASK_STATUSES,
         limit: BLOCKER_LIMIT,
@@ -358,7 +371,7 @@ export class EmployeeService implements EmployeeEngine {
     const row = await inTenant(ctx, (tx) => this.repo.find(tx, ctx.companyId, employeeId));
     if (!row) throw new DomainError('NOT_FOUND', 'Không tìm thấy AI Employee');
     const slots = await this.tasks.list(ctx, {
-      assigneeKind: 'ai',
+      assigneeKind: 'ai_employee',
       assigneeId: employeeId,
       statusIn: SLOT_TASK_STATUSES,
       limit: 200,

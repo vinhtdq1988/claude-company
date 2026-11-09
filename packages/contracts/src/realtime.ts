@@ -55,7 +55,7 @@ export const taskStatusChangedSchema = z.object({
   taskId: id,
   from: z.string(),
   to: z.string(),
-  assigneeKind: z.enum(['ai', 'human']),
+  assigneeKind: z.enum(['ai_employee', 'team', 'org_unit']),
   assigneeId: id,
   isOverdue: z.boolean(),
 });

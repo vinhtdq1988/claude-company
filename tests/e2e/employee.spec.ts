@@ -8,9 +8,6 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 const PASSWORD = 'mat-khau-manh-123';
 
-const unitItem = (page: Page, name: string) =>
-  page.locator('.org-item', { has: page.locator('strong', { hasText: new RegExp(`^${name}$`) }) });
-
 const hireForm = (page: Page): Locator => page.getByRole('form', { name: 'Tuyển AI Employee' });
 
 async function openEmployees(page: Page) {

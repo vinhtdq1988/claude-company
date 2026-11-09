@@ -1,7 +1,17 @@
 // Type khung; US4 (T133) thay bằng Zod schema ApprovalRequest.
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected';
 
-export type ToolInvocationRef = { id: string; actionType: string; payloadHash: string };
+import type { ToolInvocationStatus } from './run';
+
+/** Tham chiếu tới một dòng ledger `tool_invocation` (kèm trạng thái để dedupe theo idempotency key). */
+export type ToolInvocationRef = {
+  id: string;
+  actionType: string;
+  payloadHash: string;
+  idempotencyKey: string;
+  status: ToolInvocationStatus;
+  result?: unknown;
+};
 
 export type ApprovalRequest = {
   id: string;

@@ -9,4 +9,5 @@ export * from './approval';
 export * from './office';
 export * from './budget';
 export * from './run';
+export * from './tool-inputs';
 export * from './auth';

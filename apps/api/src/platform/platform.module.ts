@@ -7,7 +7,6 @@ import { HttpModule } from './http/http.module';
 import { ObservabilityModule } from './observability/observability.module';
 import { QueueModule } from './queue/queues';
 import { RealtimeModule } from './realtime/realtime.module';
-import { EmptyEnginesModule } from './stubs/empty-engines';
 import { StorageModule } from './storage/storage.module';
 import { TenancyModule } from './tenancy/tenancy.module';
 import { UsageBudgetModule } from './usage-budget/usage-budget.module';
@@ -27,7 +26,6 @@ export class PlatformModule {
       StorageModule,
       QueueModule,
       UsageBudgetModule,
-      EmptyEnginesModule,
     ];
     const http = options.http ? [HttpModule, AuthModule, TenancyModule, RealtimeModule] : [];
     return {
