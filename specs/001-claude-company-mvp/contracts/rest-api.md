@@ -48,7 +48,7 @@ Base path: `/api/v1`. JSON. Schema chi tiết là Zod trong `packages/contracts`
 | PATCH | `/companies/{cid}/employees/{id}` | đổi model chỉ ảnh hưởng nhân viên này (US2-AS3) |
 | POST | `/companies/{cid}/employees/{id}/suspend` · `/resume` | |
 | DELETE | `/companies/{cid}/employees/{id}` | archive; `409 EMPLOYEE_HAS_OPEN_TASKS` kèm danh sách (US2-AS4) |
-| GET | `/companies/{cid}/employees/{id}/profile-view` | dữ liệu Employee Profile cho Virtual Office (FR-038): status, currentTask+progress, currentTool, recentMessages, latestResults, reviewHistory, usage (tokens/cost tháng này + tổng), blockers |
+| GET | `/companies/{cid}/employees/{id}/profile-view` | dữ liệu Employee Profile cho Virtual Office (FR-038), schema `EmployeeProfileView` trong `packages/contracts/src/office.ts`: `employee`, `status {state, sourceEventSeq, changedAt}`, `currentTask {…, progress}`, `currentTool`, `recentMessages`, `latestResults`, `reviewHistory`, `usage {period, month, total}`, `blockers {kind: blocked\|waiting_approval\|overdue}`; mỗi danh sách tối đa 5 mục, nội dung do AI sinh là văn bản thuần; nhân viên ngoài phạm vi → `403` |
 | GET | `/companies/{cid}/workspaces` · POST | đăng ký workspace (CEO) |
 
 ## Tasks
@@ -68,8 +68,9 @@ Base path: `/api/v1`. JSON. Schema chi tiết là Zod trong `packages/contracts`
 
 | Method | Path | Mô tả |
 |---|---|---|
-| GET | `/companies/{cid}/approvals?status=pending` | hộp phê duyệt: action, summary, rationale, payload, employee, task (FR-026) |
-| POST | `/companies/{cid}/approvals/{id}/decision` | `{decision:"approve"|"reject", reason, payloadHash}` – `payloadHash` phải khớp bản người duyệt đã xem, sai → `409 APPROVAL_PAYLOAD_CHANGED`; thiếu reason → `422` |
+| GET | `/companies/{cid}/approvals?status=pending` | hộp phê duyệt: action, summary, rationale, payload, employee, task (FR-026); chỉ yêu cầu của nhân viên trong phạm vi người xem |
+| GET | `/companies/{cid}/approvals/{id}` | một yêu cầu; ngoài phạm vi → `403` |
+| POST | `/companies/{cid}/approvals/{id}/decision` | `{decision:"approve"|"reject", reason, payloadHash}` – `payloadHash` phải khớp bản người duyệt đã xem, sai → `409 APPROVAL_PAYLOAD_CHANGED`; thiếu reason → `422`; đã có quyết định hoặc đã `cancelled` → `409 APPROVAL_NOT_PENDING`; ngoài phạm vi → `403`. Duyệt chỉ ghi quyết định: hành động được thực thi sau đó bởi worker (dry-run trong v1.0) |
 
 ## Execution history
 
@@ -87,11 +88,18 @@ Base path: `/api/v1`. JSON. Schema chi tiết là Zod trong `packages/contracts`
 | GET | `/companies/{cid}/dashboard?orgUnitId=` | totalEmployees, activeTasks, completedTasks, onTimeCompletionRate, tokens, costUsd (FR-040); chỉ tổng hợp trong phạm vi người xem, `orgUnitId` ngoài phạm vi → `403` |
 | GET | `/models` | danh sách model cấu hình + giá |
 
+Ghi chú US6 (T167–T172):
+
+- `GET/PUT budget-policies/{scopeKind}/{scopeId}` cùng dùng quyền `budget.manage` theo phạm vi trong đường dẫn: Manager chỉ đọc và sửa được đơn vị, team, nhân viên trong phạm vi quản lý; phạm vi `company` và đơn vị cha chỉ CEO (`403` với Manager, cả khi đọc). `scopeId` không tồn tại (kể cả `company` khác `cid`) → `404`.
+- `PUT` thay toàn bộ chính sách: trường bỏ trống hoặc `null` là không đặt giới hạn đó. Riêng `company` luôn có giới hạn token và chi phí: bỏ trống thì giữ giá trị hiện có hoặc mặc định, `null` → `422`. `warnThreshold` bỏ trống thì giữ giá trị hiện có. `allowedModels` phải thuộc danh mục model (`422`). `GET` chưa có bản ghi trả `isDefault = true` (công ty: hạn mức mặc định đang áp dụng).
+- `GET /usage` nhận thêm `orgUnitId`, `employeeId`, `taskId` và `period = YYYY-MM | all`; `orgUnitId`/`employeeId` ngoài phạm vi → `403`; luôn chỉ cộng dữ liệu trong phạm vi người xem.
+- `GET /dashboard` nhận thêm `period` (mặc định tháng hiện tại theo múi giờ công ty, hoặc `all`) và trả thêm `period`, `orgUnitId`, `allTime { tokens, costUsd }` (tổng mọi kỳ, khớp tổng theo task – SC-008). `onTimeCompletionRate` là `null` khi chưa có task gốc `completed`. `totalEmployees` đếm AI Employee chưa lưu trữ trong phạm vi và phòng ban đang lọc.
+
 ## Office, Notifications, Milestones
 
 | Method | Path | Mô tả |
 |---|---|---|
-| GET | `/companies/{cid}/office/snapshot` | Chỉ gồm nhân viên trong phạm vi người xem. `OfficeSnapshot { seq, zones[], employees[{id, name, avatarKey, zoneId, deskIndex, state, currentTaskId, progress}] }` |
+| GET | `/companies/{cid}/office/snapshot` | Chỉ gồm nhân viên trong phạm vi người xem. `OfficeSnapshot { seq, zones[{id, kind, name, orgUnitId, layout{x,y,cols,rows}}], employees[{id, name, avatarKey, zoneId, deskIndex, state, currentTaskId, currentTool, progress}] }`. `seq` là mốc projection đã chiếu (`office_cursor`); zone department ngoài phạm vi bị bỏ, CEO Office và Break Room luôn có. `403` với tác nhân không phải người dùng |
 | GET | `/companies/{cid}/notifications?unread=true` | |
 | POST | `/companies/{cid}/notifications/{id}/read` · `/read-all` | |
 | GET | `/companies/{cid}/milestones` | |

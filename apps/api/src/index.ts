@@ -9,6 +9,8 @@ export { TaskModule } from './engines/task/task.module';
 export { CommunicationModule } from './engines/communication/communication.module';
 export { MemoryModule } from './engines/memory/memory.module';
 export { OrchestrationModule } from './engines/orchestration/orchestration.module';
+export { OfficeSimulationModule } from './engines/office-simulation/office-simulation.module';
+export { GamificationModule } from './engines/gamification/gamification.module';
 export * from './platform/engine-tokens';
 export { CONFIG, DATABASE, REDIS } from './platform/config/infra.providers';
 export { loadConfig, type AppConfig } from './platform/config/config';

@@ -9,6 +9,7 @@ import {
   EMPLOYEE_ENGINE,
   MEMORY_ENGINE,
   MODEL_CATALOG,
+  OFFICE_SIMULATION_ENGINE,
   ORCHESTRATION_ENGINE,
   ORGANIZATION_ENGINE,
   PERMISSION_ENGINE,
@@ -17,6 +18,7 @@ import {
   REDIS,
   StorageService,
   TASK_ENGINE,
+  TOOL_ADAPTER_LOOKUP,
   TaskLock,
   computeCostUsd,
   estimateSdkRun,
@@ -30,14 +32,20 @@ import type {
   EmployeeEngine,
   MemoryEngine,
   ModelCatalog,
+  OfficeSimulationEngine,
   OrchestrationEngine,
   OrganizationEngine,
   PermissionEngine,
   TaskEngine,
+  ToolAdapter,
 } from '@claude-company/contracts';
 import type { ModelGateway } from '@claude-company/model-gateway';
+import { executeApprovedAction, type ApprovalJobPayload } from './jobs/approval-jobs';
+import { completeDisplayElapsed } from './jobs/office-jobs';
 import { processJob } from './jobs/run-jobs';
 import { sweepOnce } from './jobs/overdue-sweeper';
+import { recoverOnce } from './jobs/recovery-sweeper';
+import { ApprovalRequestGate } from './runtime/approval-gate';
 import { InputBuilder } from './runtime/input-builder';
 import { RunExecutor } from './runtime/run-loop';
 import { MODEL_GATEWAY, SANDBOX_CLIENT } from './runtime/tokens';
@@ -69,8 +77,8 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
     private readonly storage: StorageService,
     @Inject(MODEL_GATEWAY) private readonly gateway: ModelGateway,
     @Inject(SANDBOX_CLIENT) private readonly sandbox: SandboxClient,
-  ) {
-  }
+    @Inject(TOOL_ADAPTER_LOOKUP) private readonly adapters: { find(actionType: string): ToolAdapter | undefined },
+  ) {}
 
   /** Engine được lấy muộn qua ModuleRef: provider alias (`useExisting`) chưa sẵn sàng trong constructor. */
   private engine<T>(token: symbol): T {
@@ -94,11 +102,14 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
       ...createWorkspaceHandlers({ sandbox: this.sandbox, toolTimeoutMs: config.TOOL_TIMEOUT_MS }),
       ...createInternalHandlers({ tasks, communication, storage: this.storage }),
     ]);
+    const permissions = this.engine<PermissionEngine>(PERMISSION_ENGINE);
     const broker = new ToolBroker({
       orchestration,
-      permissions: this.engine<PermissionEngine>(PERMISSION_ENGINE),
+      permissions,
       tasks,
       handlers,
+      // Human Approval: agent chỉ tạo đề xuất; hệ thống thực thi sau khi duyệt (action.execute-approved).
+      humanApproval: new ApprovalRequestGate({ permissions, orchestration, tasks }),
       toolTimeoutMs: config.TOOL_TIMEOUT_MS,
     });
     return new RunExecutor({
@@ -106,6 +117,7 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
       tasks,
       employees,
       orchestration,
+      permissions,
       budget: this.engine<BudgetService>(BUDGET_SERVICE),
       communication,
       catalog: this.engine<ModelCatalog>(MODEL_CATALOG),
@@ -137,9 +149,23 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
   onModuleInit(): void {
     if (this.config.WORKER_CONSUME_JOBS) this.startConsumer();
     if (this.config.SWEEP_INTERVAL_MS > 0) {
+      // Phục hồi ngay khi khởi động (sau downtime dài, run chết đã quá hạn heartbeat), rồi định kỳ cùng sweeper.
+      void this.recover();
       this.sweeper = setInterval(() => void this.sweep(), this.config.SWEEP_INTERVAL_MS);
       this.sweeper.unref();
     }
+  }
+
+  /** Quét phục hồi run chết một lần (T182). Không ném lỗi. */
+  recover() {
+    return recoverOnce({
+      orchestration: this.engine<OrchestrationEngine>(ORCHESTRATION_ENGINE),
+      logger: {
+        log: (message) => this.logger.log(message),
+        error: (message, error) =>
+          this.logger.error(message, error instanceof Error ? error.stack : String(error ?? '')),
+      },
+    });
   }
 
   private startConsumer(): void {
@@ -149,6 +175,11 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
         processJob(job, {
           executor: this.executor,
           enqueue: (name, payload, options) => this.queue.enqueue(name, payload, options),
+          executeApproved: (payload) => this.executeApproved(payload),
+          completedElapsed: (payload) =>
+            completeDisplayElapsed(payload, {
+              office: this.engine<OfficeSimulationEngine>(OFFICE_SIMULATION_ENGINE),
+            }),
         }),
       { connection: this.redis.duplicate(), concurrency: CONCURRENCY },
     );
@@ -157,11 +188,23 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  /** Job `action.execute-approved`: hệ thống thực thi payload đã duyệt qua adapter rồi đánh thức run. */
+  executeApproved(payload: ApprovalJobPayload) {
+    return executeApprovedAction(payload, {
+      permissions: this.engine<PermissionEngine>(PERMISSION_ENGINE),
+      orchestration: this.engine<OrchestrationEngine>(ORCHESTRATION_ENGINE),
+      tasks: this.engine<TaskEngine>(TASK_ENGINE),
+      adapters: this.adapters,
+      enqueue: (name, data, options) => this.queue.enqueue(name, data, options),
+    });
+  }
+
   async sweep() {
     try {
       return await sweepOnce({
         tasks: this.engine<TaskEngine>(TASK_ENGINE),
         orchestration: this.engine<OrchestrationEngine>(ORCHESTRATION_ENGINE),
+        permissions: this.engine<PermissionEngine>(PERMISSION_ENGINE),
       });
     } catch (error) {
       this.logger.error('Sweeper lỗi', error instanceof Error ? error.stack : String(error));

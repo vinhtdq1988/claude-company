@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
 import {
+  APPROVAL_RATIONALE_FIELD,
   DomainError,
   TOOL_INPUT_SCHEMAS,
   type OrchestrationEngine,
@@ -8,24 +8,12 @@ import {
   type ToolInvocationRef,
   type ToolResult,
 } from '@claude-company/contracts';
-import { classifyShellCommand, getActionDefinition } from '@claude-company/policy';
+import { classifyShellCommand, getActionDefinition, sha256, stableStringify } from '@claude-company/policy';
 import { FailClosedApprovalGate, type HumanApprovalGate, type RunContext, type ToolHandler } from './run-context';
 import { redact } from './redact';
 import { actionTypeForTool } from './tool-specs';
 
-/** JSON ổn định (khóa sắp xếp) để cùng một input luôn cho cùng một hash. */
-export function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'null';
-}
-
-export const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
+export { sha256, stableStringify };
 
 export type ToolBrokerDeps = {
   orchestration: Pick<
@@ -49,6 +37,7 @@ export type ToolBrokerDeps = {
  */
 export class ToolBroker {
   private readonly approval: HumanApprovalGate;
+  private readonly chains = new WeakMap<object, Promise<void>>();
 
   constructor(private readonly deps: ToolBrokerDeps) {
     this.approval = deps.humanApproval ?? new FailClosedApprovalGate();
@@ -75,6 +64,13 @@ export class ToolBroker {
         return { status: 'error', message: `Input không hợp lệ: ${parsed.error?.message ?? ''}` };
       }
       input = parsed.data;
+    }
+    // Lý do do agent đưa ra không thuộc payload: tách trước khi đánh giá quyền và băm (hiển thị như dữ liệu).
+    let rationale: string | undefined;
+    if (input && typeof input === 'object' && APPROVAL_RATIONALE_FIELD in input) {
+      const { [APPROVAL_RATIONALE_FIELD]: raw, ...rest } = input as Record<string, unknown>;
+      rationale = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+      input = rest;
     }
 
     // 2. Lệnh shell được phân loại lại bằng parser AST: git push → workspace.git.push, ngoài allowlist → restricted.
@@ -110,7 +106,11 @@ export class ToolBroker {
       for (let attempt = 1; ; attempt += 1) {
         const existing = await this.deps.orchestration.findToolInvocationByKey(run.ctx, key);
         if (!existing) break;
-        if (existing.status === 'failed') {
+        // `pending_approval` chưa có yêu cầu đi kèm (sập giữa lúc ghi ledger và tạo yêu cầu) cũng không được chặn lần thử mới.
+        const orphanPending =
+          existing.status === 'pending_approval' &&
+          !(existing.result as { approvalRequestId?: string } | undefined)?.approvalRequestId;
+        if (existing.status === 'failed' || orphanPending) {
           key = `${baseKey}:${attempt + 1}`; // bản ghi `failed` không chặn lần thử mới
           continue;
         }
@@ -133,18 +133,40 @@ export class ToolBroker {
     if (denied) return { status: 'denied', message: reason };
 
     if (level === 'human_approval') {
-      const result = await this.approval.handle(run, invocation, {
-        actionType,
-        input,
-        summary: `Đề xuất ${actionType}`,
+      return this.serialized(run, async () => {
+        // Hai lời gọi đồng thời cùng qua kiểm tra khóa ở đầu `invoke`: chỉ lời gọi đầu được tạo yêu cầu duyệt.
+        if (run.state.locked) {
+          await this.deps.orchestration.updateToolInvocation(run.ctx, invocation.id, {
+            status: 'failed',
+            result: { message: run.state.lockReason ?? 'Run đã bị khóa' },
+          });
+          return { status: 'run_locked' as const, message: run.state.lockReason ?? 'Run đã bị khóa' };
+        }
+        let result: ToolResult;
+        try {
+          result = await this.approval.handle(run, invocation, {
+            actionType,
+            input,
+            summary: `Đề xuất ${actionType}`,
+            rationale,
+          });
+        } catch (error) {
+          // Không tạo được yêu cầu: bản ghi `pending_approval` mồ côi sẽ chặn mọi lần đề xuất lại, nên đóng nó lại.
+          const message = error instanceof Error ? error.message : String(error);
+          await this.deps.orchestration.updateToolInvocation(run.ctx, invocation.id, {
+            status: 'failed',
+            result: { error: redact(message) },
+          });
+          return { status: 'error' as const, message: `Không tạo được yêu cầu phê duyệt: ${redact(message)}` };
+        }
+        if (result.status === 'denied') {
+          await this.deps.orchestration.updateToolInvocation(run.ctx, invocation.id, {
+            status: 'denied',
+            result: { message: result.message },
+          });
+        }
+        return result;
       });
-      if (result.status === 'denied') {
-        await this.deps.orchestration.updateToolInvocation(run.ctx, invocation.id, {
-          status: 'denied',
-          result: { message: result.message },
-        });
-      }
-      return result;
     }
     if (level === 'review_required') run.state.requiresReview = true;
     return this.execute(run, invocation, actionType, input);
@@ -203,12 +225,27 @@ export class ToolBroker {
       case 'succeeded':
         return { status: 'ok', output: existing.result };
       case 'pending_approval':
-        return { status: 'pending_approval', message: 'Đề xuất đang chờ phê duyệt' };
+        // `result` giữ `approvalRequestId` để provider biết run đang chờ yêu cầu nào.
+        return { status: 'pending_approval', output: existing.result, message: 'Đề xuất đang chờ phê duyệt' };
       case 'denied':
         return { status: 'denied', message: 'Hành động này đã bị từ chối trước đó' };
       default:
         return { status: 'error', message: `Hành động đang ở trạng thái "${existing.status}"` };
     }
+  }
+
+  /** Chuỗi hóa theo run để chỉ một yêu cầu phê duyệt được tạo trước khi tool khác bị khóa. */
+  private async serialized<T>(run: RunContext, fn: () => Promise<T>): Promise<T> {
+    const previous = this.chains.get(run.state) ?? Promise.resolve();
+    const next = previous.then(fn, fn);
+    this.chains.set(
+      run.state,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
   }
 
   private async step(run: RunContext, summary: string, payload: Record<string, unknown>): Promise<void> {

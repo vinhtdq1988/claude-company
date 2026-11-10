@@ -22,7 +22,9 @@ RUN pnpm install --frozen-lockfile --filter @claude-company/worker...
 FROM base AS runtime
 ENV NODE_ENV=production
 # Worker tạo git worktree cho từng run nên cần git.
-RUN apt-get update \n && apt-get install -y --no-install-recommends git \n && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps ./apps
 COPY --from=deps /app/packages ./packages

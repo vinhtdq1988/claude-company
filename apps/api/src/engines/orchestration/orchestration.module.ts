@@ -1,10 +1,12 @@
 import { Global, Module, type OnModuleInit } from '@nestjs/common';
 import { ORCHESTRATION_ENGINE } from '../../platform/engine-tokens';
 import { EnvelopeMapperRegistry } from '../../platform/events/envelope-mapper';
+import { ScopeConcurrency } from './concurrency-limits';
 import { OrchestrationRepository } from './orchestration.repository';
 import { OrchestrationService } from './orchestration.service';
 import { ParentTaskService } from './parent-task.service';
 import { ReviewFlowService } from './review-flow.service';
+import { RunController } from './run.controller';
 import { TaskScheduler } from './scheduler.service';
 import { TaskFlowListener } from './task-flow.listener';
 
@@ -14,9 +16,11 @@ import { TaskFlowListener } from './task-flow.listener';
  */
 @Global()
 @Module({
+  controllers: [RunController],
   providers: [
     OrchestrationRepository,
     ReviewFlowService,
+    ScopeConcurrency,
     TaskScheduler,
     ParentTaskService,
     OrchestrationService,

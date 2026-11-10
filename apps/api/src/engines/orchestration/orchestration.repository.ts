@@ -72,10 +72,14 @@ export function toInvocation(row: InvocationRow): ToolInvocation {
 export function toInvocationRef(row: InvocationRow): ToolInvocationRef {
   return {
     id: row.id,
+    runId: row.agentRunId,
+    taskId: row.taskId,
     actionType: row.actionType,
+    permissionLevel: row.permissionLevel,
     payloadHash: row.inputHash,
     idempotencyKey: row.idempotencyKey,
     status: row.status,
+    input: row.input,
     result: row.result ?? undefined,
   };
 }
@@ -162,11 +166,15 @@ export class OrchestrationRepository {
   async listRuns(
     tx: Tx,
     companyId: string,
-    filter: { taskId?: string; employeeId?: string; limit: number },
+    filter: { taskId?: string; employeeId?: string; employeeIds?: string[]; limit: number },
   ): Promise<RunRow[]> {
     const conditions: SQL[] = [eq(agentRun.companyId, companyId)];
     if (filter.taskId) conditions.push(eq(agentRun.taskId, filter.taskId));
     if (filter.employeeId) conditions.push(eq(agentRun.aiEmployeeId, filter.employeeId));
+    if (filter.employeeIds) {
+      if (filter.employeeIds.length === 0) return [];
+      conditions.push(inArray(agentRun.aiEmployeeId, filter.employeeIds));
+    }
     return tx
       .select()
       .from(agentRun)
@@ -285,6 +293,22 @@ export class OrchestrationRepository {
       .update(toolInvocation)
       .set(patch)
       .where(and(eq(toolInvocation.companyId, companyId), eq(toolInvocation.id, id)));
+  }
+
+  /** `pending_approval` → `executing` trong một câu lệnh có điều kiện; `false` nếu đã có người chiếm trước. */
+  async claimInvocation(tx: Tx, companyId: string, id: string): Promise<boolean> {
+    const rows = await tx
+      .update(toolInvocation)
+      .set({ status: 'executing' })
+      .where(
+        and(
+          eq(toolInvocation.companyId, companyId),
+          eq(toolInvocation.id, id),
+          eq(toolInvocation.status, 'pending_approval'),
+        ),
+      )
+      .returning({ id: toolInvocation.id });
+    return rows.length > 0;
   }
 
   listInvocationsOfRun(tx: Tx, companyId: string, runId: string): Promise<InvocationRow[]> {

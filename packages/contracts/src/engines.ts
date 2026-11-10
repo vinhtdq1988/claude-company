@@ -10,6 +10,7 @@ import type {
   RecoveryReport,
   RoutedNotification,
   RunEventInput,
+  RunListFilter,
   RunStatus,
   RunStepInput,
   RunStepRef,
@@ -17,7 +18,8 @@ import type {
   ToolInvocationPatch,
   ToolResult,
 } from './run';
-import type { ApprovalRequest, ToolInvocationRef } from './approval';
+import type { ApprovalFilter, ApprovalRequest, ToolInvocationRef } from './approval';
+import type { Milestone } from './gamification';
 import type {
   AppPermission,
   BootstrapContext,
@@ -37,7 +39,7 @@ import type {
   ModelInfo,
   Workspace,
 } from './employee';
-import type { LimitRef, UsageRecordInput, UsageSummary } from './budget';
+import type { ConcurrencyLimit, LimitRef, UsageRecordInput, UsageSummary } from './budget';
 import type {
   Company,
   OrgChart,
@@ -47,7 +49,12 @@ import type {
   UpsertOrgUnitInput,
   UpsertTeamInput,
 } from './organization';
-import type { EmployeeStatusChange, OfficeSnapshot } from './office';
+import type {
+  EmployeeProfileView,
+  EmployeeStatusChange,
+  OfficeEmployeeState,
+  OfficeSnapshot,
+} from './office';
 import type { DomainEvent } from './realtime';
 import type {
   Artifact,
@@ -164,7 +171,12 @@ export interface TaskEngine {
   list(ctx: RequestContext, filter: TaskFilter): Promise<Page<Task>>;
   getStats(
     ctx: RequestContext,
-    filter: { employeeId?: string; orgUnitId?: string },
+    filter: {
+      employeeId?: string;
+      orgUnitId?: string;
+      /** Chỉ đếm task có assignee trong phạm vi quản lý này (Dashboard của Manager). Không đặt = không lọc. */
+      scope?: ManagedScope;
+    },
   ): Promise<TaskStats>;
   /** Sweeper: chỉ trả company_id. */
   listCompaniesWithOpenTasks(): Promise<string[]>;
@@ -184,13 +196,19 @@ export interface OrchestrationEngine {
   ): Promise<AgentRunRef>;
   /** Tạo lần thử kế tiếp (retry) của một run đã lỗi tạm thời, sau `delayMs`. */
   enqueueRetry(ctx: RequestContext, runId: string, delayMs: number): Promise<AgentRunRef>;
-  resumeAfterApproval(ctx: RequestContext, approvalRequestId: string): Promise<void>;
+  /**
+   * Sau `approval.decided`: duyệt → xếp job `action.execute-approved`; từ chối → ghi `denied` rồi xếp `run.resume`
+   * kèm lý do. Idempotent (jobId ổn định) vì sự kiện được giao ít nhất một lần. `replay` (sweeper) dùng jobId theo
+   * khung thời gian để phát lại job đã mất (Redis mất dữ liệu) mà không bị BullMQ khử trùng với job cũ.
+   */
+  resumeAfterApproval(
+    ctx: RequestContext,
+    approvalRequestId: string,
+    options?: { replay?: boolean },
+  ): Promise<void>;
   cancelRunsForTask(ctx: RequestContext, taskId: string): Promise<void>;
   getRun(ctx: RequestContext, runId: string): Promise<AgentRunDetail>;
-  listRuns(
-    ctx: RequestContext,
-    filter: { taskId?: string; employeeId?: string },
-  ): Promise<Page<AgentRunSummary>>;
+  listRuns(ctx: RequestContext, filter: RunListFilter): Promise<Page<AgentRunSummary>>;
   listExecutedActions(ctx: RequestContext, taskId: string): Promise<ExecutedAction[]>;
   recoverStaleRuns(): Promise<RecoveryReport>;
   /**
@@ -213,6 +231,11 @@ export interface OrchestrationEngine {
     ctx: RequestContext,
     idempotencyKey: string,
   ): Promise<ToolInvocationRef | null>;
+  /**
+   * Chiếm quyền thực thi một hành động đã duyệt: chuyển `pending_approval` → `executing` trong một câu lệnh có điều kiện.
+   * Chỉ một người gọi nhận `true`, nên duyệt hai lần hoặc job chạy hai lần vẫn chỉ thực thi một lần.
+   */
+  claimToolInvocation(ctx: RequestContext, id: string): Promise<boolean>;
   saveConversationState(ctx: RequestContext, runId: string, messages: unknown): Promise<void>;
   loadConversationState(ctx: RequestContext, runId: string): Promise<unknown | null>;
 }
@@ -231,11 +254,16 @@ export interface PermissionEngine {
     summary: string,
     rationale: string,
   ): Promise<ApprovalRequest>;
+  /** @throws DomainError FORBIDDEN, APPROVAL_NOT_PENDING, APPROVAL_PAYLOAD_CHANGED, VALIDATION_FAILED */
   decideApproval(
     ctx: RequestContext,
     id: string,
     d: { decision: 'approve' | 'reject'; reason: string; payloadHash: string },
   ): Promise<ApprovalRequest>;
+  /** Một yêu cầu phê duyệt kèm tên task và nhân viên. @throws DomainError NOT_FOUND */
+  getApproval(ctx: RequestContext, id: string): Promise<ApprovalRequest>;
+  /** Mới nhất trước. Người gọi truyền `employeeIds` theo `ManagedScope` của người xem. */
+  listApprovals(ctx: RequestContext, filter: ApprovalFilter): Promise<Page<ApprovalRequest>>;
   /** Sweeper: nhắc người duyệt, không bao giờ tự duyệt. */
   remindPendingApprovals(ctx: RequestContext, now: Date): Promise<number>;
   listCompaniesWithPendingApprovals(): Promise<string[]>;
@@ -267,14 +295,28 @@ export interface BudgetService {
   /** Giải phóng mọi phần đang giữ của một run (run chết, bị hủy). */
   releaseRun(ctx: RequestContext, runId: string): Promise<void>;
   isModelAllowed(ctx: RequestContext, employeeId: string, modelId: string): Promise<boolean>;
+  /**
+   * Model được phép sau khi giao các `allowed_models` của mọi scope áp dụng cho nhân viên (có thể chưa tồn tại: lúc tạo
+   * hoặc đổi đơn vị). `null` = không scope nào hạn chế. `employeeId` bỏ trống khi nhân viên chưa được tạo.
+   */
+  allowedModelsFor(
+    ctx: RequestContext,
+    target: { homeOrgUnitId: string; teamIds?: string[]; employeeId?: string },
+  ): Promise<string[] | null>;
+  /** Giới hạn `max_concurrent_tasks` của scope company, org_unit (cả tổ tiên), team áp dụng cho nhân viên. */
+  getConcurrencyLimits(ctx: RequestContext, employeeId: string): Promise<ConcurrencyLimit[]>;
   getUsage(
     ctx: RequestContext,
     filter: {
       employeeId?: string;
       taskId?: string;
+      /** Một lần chạy cụ thể; cộng dồn mọi kỳ như `taskId`. */
+      runId?: string;
       orgUnitId?: string;
       period?: string;
       groupBy?: 'employee' | 'task' | 'org_unit';
+      /** Chỉ cộng dữ liệu thuộc phạm vi quản lý này. Không đặt = không lọc (engine gọi engine). */
+      scope?: ManagedScope;
     },
   ): Promise<UsageSummary>;
 }
@@ -292,9 +334,24 @@ export interface IdentityDirectory {
 }
 
 export interface OfficeSimulationEngine {
-  /** Reducer thuần, tất định. */
-  apply(event: DomainEvent): EmployeeStatusChange | null;
+  /**
+   * Reducer thuần, tất định: cùng (`event`, `previous`) luôn cho cùng kết quả, không đọc DB hay đồng hồ.
+   * `previous` bỏ trống nghĩa là nhân viên chưa có trạng thái (`idle`). Trả `null` nếu sự kiện không đổi
+   * trạng thái hiển thị của nhân viên nào (kể cả sự kiện giao lại có `seq` đã áp).
+   */
+  apply(event: DomainEvent, previous?: OfficeEmployeeState): EmployeeStatusChange | null;
+  /** Chỉ gồm nhân viên trong phạm vi quản lý của người xem; `seq` là mốc đã chiếu xong. */
   getSnapshot(ctx: RequestContext): Promise<OfficeSnapshot>;
+  /** Dữ liệu Employee Profile (FR-038); `NOT_FOUND` nếu nhân viên không tồn tại. */
+  getProfileView(ctx: RequestContext, employeeId: string): Promise<EmployeeProfileView>;
+  /**
+   * Job trễ 60 giây (T156): nếu nhân viên vẫn giữ đúng lần `completed` có `sinceSeq` thì ghi `domain_event`
+   * `office.completed_display_elapsed` để đưa về `idle`. Trả `false` nếu không còn gì để làm (idempotent).
+   */
+  completeDisplayElapsed(
+    ctx: RequestContext,
+    input: { employeeId: string; taskId: string; sinceSeq: number },
+  ): Promise<boolean>;
 }
 
 export interface CommunicationEngine {
@@ -323,8 +380,13 @@ export interface MemoryEngine {
 }
 
 export interface GamificationEngine {
-  /** Chỉ milestone first_employee / first_department / first_approved_task. */
+  /**
+   * Chỉ milestone first_employee / first_department / first_approved_task. Idempotent: sự kiện giao lại hoặc phát lại
+   * không tạo bản ghi thứ hai; mỗi cột mốc mới phát đúng một `milestone.achieved`.
+   */
   onDomainEvent(event: DomainEvent): Promise<void>;
+  /** Cột mốc đã đạt của công ty, cũ nhất trước. */
+  list(ctx: RequestContext): Promise<Milestone[]>;
 }
 
 export interface ToolAdapter {

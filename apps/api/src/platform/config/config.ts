@@ -30,9 +30,15 @@ const envSchema = z
     S3_SECRET_KEY: z.string().min(1),
     S3_FORCE_PATH_STYLE: bool.default(true),
 
-    MODEL_PROVIDER: z.enum(['anthropic', 'fake']).default('fake'),
+    /**
+     * `anthropic`: API key (production). `claude_subscription`: đăng nhập subscription của Claude Code CLI, chỉ để
+     * chạy local. `fake`: tất định, không tốn token.
+     */
+    MODEL_PROVIDER: z.enum(['anthropic', 'claude_subscription', 'fake']).default('fake'),
     ANTHROPIC_API_KEY: z.string().optional(),
     ADAPTER_MODE: z.enum(['dry_run', 'live']).default('dry_run'),
+    /** Thư mục log JSONL của adapter dry-run (volume `dry_run_data`). */
+    DRY_RUN_LOG_PATH: z.string().default('./data/dry-run'),
     WORKSPACE_HOST_PATH: z.string().default('./data/workspaces'),
     /** Thư mục chứa `/worktrees/{runId}` (volume `run_worktrees`). */
     RUN_WORKTREES_PATH: z.string().default('./data/worktrees'),
@@ -64,6 +70,8 @@ const envSchema = z
     RUN_STALE_AFTER_MS: z.coerce.number().int().positive().default(60_000),
     /** Chu kỳ sweeper (task quá hạn, phục hồi run); 0 tắt sweeper tự chạy (test gọi thủ công). */
     SWEEP_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
+    /** Run `waiting_approval` đã có quyết định mà sau chừng này (ms) vẫn chưa tiến triển thì sweeper phát lại job. */
+    APPROVAL_REPLAY_AFTER_MS: z.coerce.number().int().min(0).default(120_000),
     APPROVAL_REMINDER_FIRST_MS: z.coerce.number().int().positive().default(3_600_000),
     APPROVAL_REMINDER_REPEAT_MS: z.coerce
       .number()
@@ -76,6 +84,15 @@ const envSchema = z
     SDK_RUN_RESERVE_USD: z.coerce.number().positive().default(2),
     SDK_RUN_RESERVE_TOKENS: z.coerce.number().int().positive().default(200_000),
     SDK_RESUME_AFTER_CRASH: bool.default(false),
+    /** Số lần đăng nhập tối đa cho mỗi cặp (IP, email) trong một cửa sổ; mỗi IP được gấp 5 lần (T193). */
+    LOGIN_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(10),
+    LOGIN_RATE_LIMIT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(15 * 60_000),
+    /** `true` khi API đứng sau reverse proxy (nginx): lấy IP người dùng từ `X-Forwarded-For` cho rate limit. */
+    TRUST_PROXY: bool.default(false),
     ARTIFACT_CONTEXT_MAX_BYTES: z.coerce.number().int().positive().default(200_000),
 
     EGRESS_PROXY_URL: z.string().optional(),
@@ -88,6 +105,15 @@ const envSchema = z
         code: 'custom',
         path: ['ANTHROPIC_API_KEY'],
         message: 'Bắt buộc khi MODEL_PROVIDER=anthropic',
+      });
+    }
+    // Điều khoản Anthropic không cho dùng subscription cá nhân để chạy dịch vụ: production luôn dùng API key.
+    if (env.MODEL_PROVIDER === 'claude_subscription' && env.NODE_ENV === 'production') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MODEL_PROVIDER'],
+        message:
+          'claude_subscription chỉ dùng khi chạy local; production phải đặt MODEL_PROVIDER=anthropic',
       });
     }
   });

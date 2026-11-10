@@ -13,6 +13,7 @@
     "db:migrate": "pnpm --filter @claude-company/db db:migrate",
     "db:seed": "pnpm --filter @claude-company/db db:seed",
     "test:unit": "vitest run --project unit",
+    "test:local": "node scripts/test-local.mjs",
     "test:contract": "vitest run --project contract",
     "test:integration": "vitest run --project integration",
     "test:security": "vitest run --project security",

@@ -4,6 +4,8 @@ import { NavLink, Outlet, useNavigate, useParams } from 'react-router';
 import { describeError, t } from '../i18n';
 import { api } from '../lib/api';
 import { meQuery, queryClient, queryKeys } from '../lib/query';
+import { MilestoneToast } from '../features/milestones/MilestoneToast';
+import { NotificationCenter } from '../features/notifications/NotificationCenter';
 import { realtime, type ConnectionStatus } from '../realtime/socket';
 import { COMPANY_SCREENS } from './screens';
 
@@ -53,6 +55,9 @@ export function Layout() {
       <header className="topbar">
         <strong>{t('app.name')}</strong>
         <span className="spacer" />
+        {companyId && me?.memberships.some((m) => m.companyId === companyId) && (
+          <NotificationCenter companyId={companyId} />
+        )}
         <span>{me?.user.displayName}</span>
         <button type="button" onClick={() => logout.mutate()} disabled={logout.isPending}>
           {t('app.logout')}
@@ -68,6 +73,9 @@ export function Layout() {
         </nav>
       )}
       <ConnectionBanner />
+      {companyId && me?.memberships.some((m) => m.companyId === companyId) && (
+        <MilestoneToast companyId={companyId} />
+      )}
       {logout.isError && (
         <div role="alert" className="banner banner-error">
           {describeError(logout.error)}

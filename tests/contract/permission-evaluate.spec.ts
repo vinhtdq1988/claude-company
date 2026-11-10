@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import type { RequestContext } from '@claude-company/contracts';
 import { closeDatabase, initDatabase, newId, withTenant } from '@claude-company/db';
 import { actionPolicy } from '@claude-company/db/schema/permission';
+import { ApprovalService } from '../../apps/api/src/engines/permission/approval.service';
 import { PermissionService } from '../../apps/api/src/engines/permission/permission.service';
 import { EMPLOYEE_ENGINE, ORGANIZATION_ENGINE } from '../../apps/api/src/platform/engine-tokens';
 import { prepareDatabase, startInfra, type StartedInfra } from '../support/containers';
@@ -66,6 +67,8 @@ describe('Contract: PermissionEngine.evaluate và authorize (T035a)', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         PermissionService,
+        // `evaluate`/`authorize` không dùng Human Approval; phần đó có contract test riêng (permission-engine.spec.ts).
+        { provide: ApprovalService, useValue: {} },
         { provide: ORGANIZATION_ENGINE, useValue: org },
         { provide: EMPLOYEE_ENGINE, useValue: employees },
       ],

@@ -75,6 +75,8 @@ export function buildTestConfig(
     S3_SECRET_KEY: infra.s3SecretKey ?? 'test-secret',
     MODEL_PROVIDER: 'fake',
     OUTBOX_POLL_MS: '0',
+    // Test đăng ký/đăng nhập hàng loạt từ một IP: nới giới hạn, riêng test rate limit tự đặt giá trị thấp.
+    LOGIN_RATE_LIMIT_MAX: '100000',
     ...env,
   });
 }

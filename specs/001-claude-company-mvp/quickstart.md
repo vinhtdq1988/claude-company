@@ -22,7 +22,7 @@ pnpm dev                                # api :3000, worker, web :5173
 
 Hoặc toàn bộ bằng Docker: `docker compose -f docker/docker-compose.yml up --build`.
 
-Biến cấu hình quan trọng (`docker/.env`): `MODEL_PROVIDER=anthropic|fake`, `ADAPTER_MODE=dry_run` (mặc định), `BUDGET_WARN_THRESHOLD=0.8`, `MAX_REWORK=3`, `RUN_TIMEOUT_MS`, `RETRY_MAX`, `SDK_RESUME_AFTER_CRASH=false`.
+Biến cấu hình quan trọng (`docker/.env`): `MODEL_PROVIDER=anthropic|claude_subscription|fake`, `ADAPTER_MODE=dry_run` (mặc định), `BUDGET_WARN_THRESHOLD=0.8`, `MAX_REWORK=3`, `RUN_TIMEOUT_MS`, `RETRY_MAX`, `SDK_RESUME_AFTER_CRASH=false`.
 
 ## 3. Bộ test tự động
 
@@ -38,7 +38,7 @@ Kỳ vọng: tất cả pass. `test:security` là cổng bắt buộc theo const
 
 ## 4. Kịch bản kiểm chứng thủ công
 
-Chạy với `MODEL_PROVIDER=anthropic`, `ADAPTER_MODE=dry_run`, mở http://localhost:5173.
+Chạy với `MODEL_PROVIDER=anthropic` (production, cần `ANTHROPIC_API_KEY`) hoặc `claude_subscription` (chỉ local, xem mục 6), `ADAPTER_MODE=dry_run`, mở http://localhost:5173.
 
 | # | Kịch bản | Bước | Kết quả mong đợi | Liên quan |
 |---|---|---|---|---|
@@ -58,3 +58,15 @@ Chạy với `MODEL_PROVIDER=anthropic`, `ADAPTER_MODE=dry_run`, mở http://loc
 ## 5. Truy vết hoàn chỉnh (SC-014)
 
 Với task ở Q3, mở chi tiết task → tab Lịch sử: phải thấy người giao, AI Employee thực hiện (run + steps), reviewer AI (evidence), người phê duyệt, lý do và thời điểm từng quyết định.
+
+## 6. Chạy local bằng subscription (`MODEL_PROVIDER=claude_subscription`)
+
+Dành cho thử nghiệm trên máy cá nhân, không cần API key. Production luôn dùng `MODEL_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`.
+
+1. Cài Claude Code CLI và đăng nhập một lần: `claude login` (kiểm tra bằng `claude auth status`).
+2. Đặt `MODEL_PROVIDER=claude_subscription` (không đặt `ANTHROPIC_API_KEY`; nếu biến này có trong môi trường, CLI sẽ ưu tiên nó và tính tiền theo token, nên chế độ này cố ý không truyền nó cho subprocess).
+3. Chạy `pnpm dev` trực tiếp trên máy (không dùng Docker: container không có đăng nhập trong `~/.claude`).
+
+Hành vi: cả hai runtime (`claude_agent_sdk` và `messages_api`) đi qua Agent SDK; decompose/review dùng structured output của SDK; vai trò `messages_api` lưu `session` làm hội thoại để nối lại sau Human Approval. Mọi chốt chặn quyền, ledger, ngân sách không đổi. Chi phí trong hệ thống là chi phí quy đổi theo bảng giá, lượng dùng thật trừ vào hạn mức subscription.
+
+Giới hạn: cấu hình bị từ chối khi `NODE_ENV=production`; điều khoản Anthropic không cho dùng subscription cá nhân để chạy dịch vụ; chưa có kiểm soát lượng dùng theo hạn mức subscription (chỉ `monthly_*_limit` của hệ thống). Thử nhanh không cần dựng stack: `cd apps/worker && node --import @swc-node/register/esm-register ../../scripts/spike-agent-sdk-subscription.mjs`.

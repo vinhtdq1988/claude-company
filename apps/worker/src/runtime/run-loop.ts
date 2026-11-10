@@ -10,6 +10,7 @@ import {
   type EmployeeProfile,
   type ModelCatalog,
   type OrchestrationEngine,
+  type PermissionEngine,
   type RequestContext,
   type RunPurpose,
   type TaskDetail,
@@ -24,6 +25,7 @@ import {
   type ModelGateway,
   type TokenUsage,
 } from '@claude-company/model-gateway';
+import { renderApprovalNotice } from './approval-notice';
 import { InputBuilder, systemPromptFor } from './input-builder';
 import type { RunContext, RunState } from './run-context';
 import { ToolBroker } from './tool-broker';
@@ -38,6 +40,8 @@ export type RunJobPayload = {
   employeeId: string;
   purpose: RunPurpose;
   traceId: string;
+  /** Có giá trị: job `run.resume` tiếp tục run đang `waiting_approval` sau quyết định của người duyệt (US4). */
+  approvalRequestId?: string;
 };
 
 /** Trạng thái task mà mỗi loại run hợp lệ; ngoài trạng thái đó run bị hủy thay vì chạy. */
@@ -89,6 +93,7 @@ export type RunLoopDeps = {
   tasks: TaskEngine;
   employees: EmployeeEngine;
   orchestration: OrchestrationEngine;
+  permissions: Pick<PermissionEngine, 'getApproval'>;
   budget: BudgetService;
   communication: CommunicationEngine;
   catalog: ModelCatalog;
@@ -131,7 +136,9 @@ export class RunExecutor {
     const { deps } = this;
     const sys: RequestContext = { companyId: job.companyId, actor: { kind: 'system' }, traceId: job.traceId };
     const run = await deps.orchestration.getRun(sys, job.runId);
-    if (run.status !== 'queued') return; // đã chạy, bị hủy hoặc job bị giao lại
+    // `queued`: run mới. `waiting_approval`: resume sau quyết định phê duyệt. Trạng thái khác: đã chạy, bị hủy hoặc job bị giao lại.
+    const resuming = job.approvalRequestId !== undefined;
+    if (run.status !== (resuming ? 'waiting_approval' : 'queued')) return;
 
     const [task, employee] = await Promise.all([
       deps.tasks.get(sys, job.taskId),
@@ -186,8 +193,8 @@ export class RunExecutor {
     }, deps.config.RUN_HEARTBEAT_INTERVAL_MS);
 
     try {
-      const outcome = await this.drive(ai, run, task, employee, price, state, abort, flags);
-      await this.conclude(ai, run, task, outcome, flags);
+      const outcome = await this.drive(ai, run, task, employee, price, state, abort, flags, job.approvalRequestId);
+      await this.conclude(ai, run, task, outcome, flags, state);
     } catch (error) {
       deps.logger.error(`Run ${run.id} gặp lỗi không lường trước`, error);
       await this.fail(
@@ -216,6 +223,7 @@ export class RunExecutor {
     state: RunState,
     abort: AbortController,
     flags: { timedOut: boolean; cancelled: boolean; budgetExceeded: boolean },
+    approvalRequestId?: string,
   ): Promise<Outcome> {
     const { deps } = this;
     const purpose = run.purpose;
@@ -291,15 +299,39 @@ export class RunExecutor {
     }
     const tokenCeiling = deps.cost.sdkTokenCeiling(sdkReservedTokens, deps.config.SDK_BUDGET_HEADROOM);
 
+    // Resume sau phê duyệt: kết quả duyệt là DỮ LIỆU đưa cho agent; SDK nối lại session, messages_api nạp hội thoại đã lưu.
+    let input = await deps.inputs.build(ai, task, purpose, employee.id);
+    let resumeSessionId = run.providerSessionId ?? undefined;
+    let resumeConversation: unknown;
+    if (approvalRequestId) {
+      const approval = await deps.permissions.getApproval(ai, approvalRequestId);
+      const detail = await deps.orchestration.getRun(ai, run.id);
+      const notice = renderApprovalNotice(
+        approval,
+        detail.toolInvocations.find((i) => i.id === approval.toolInvocationId),
+      );
+      const saved = isSdk ? undefined : await deps.orchestration.loadConversationState(ai, run.id);
+      if (isSdk ? resumeSessionId : saved) {
+        input = notice;
+        resumeConversation = saved ?? undefined;
+      } else {
+        // Không còn session/hội thoại để nối: bắt đầu lại; sổ ledger (dedupe) chặn việc lặp hành động đã làm.
+        input = [input, notice].join('\n\n');
+        resumeSessionId = undefined;
+      }
+    } else if (!isSdk) {
+      resumeConversation = (await deps.orchestration.loadConversationState(ai, run.id)) ?? undefined;
+    }
+
     const request: AgentRunRequest = {
       runtimeKind: run.runtimeKind,
       modelId: run.modelId,
       systemPrompt: systemPromptFor(employee.systemPrompt, purpose),
-      input: await deps.inputs.build(ai, task, purpose, employee.id),
+      input,
       tools: structured ? [] : buildToolSpecs(employee.toolGrants, run.runtimeKind),
       workspacePath: workspace?.dir,
-      resumeSessionId: run.providerSessionId ?? undefined,
-      resumeConversation: isSdk ? undefined : ((await deps.orchestration.loadConversationState(ai, run.id)) ?? undefined),
+      resumeSessionId,
+      resumeConversation,
       limits: {
         maxCostUsd,
         maxTokens: MESSAGES_MAX_TOKENS,
@@ -433,6 +465,7 @@ export class RunExecutor {
     task: TaskDetail,
     outcome: Outcome,
     flags: { timedOut: boolean; cancelled: boolean; budgetExceeded: boolean },
+    state: RunState,
   ): Promise<void> {
     const { deps } = this;
     if (flags.cancelled) return; // run đã `cancelled` ở phía engine; không ghi đè
@@ -449,7 +482,17 @@ export class RunExecutor {
       return;
     }
     if (outcome.kind === 'paused') {
-      // Human Approval thuộc US4: ToolBroker hiện từ chối fail-closed (D6) nên nhánh này chưa xảy ra.
+      // Provider chỉ tạm dừng khi có tool trả `pending_approval`/`run_locked`. Không có yêu cầu phê duyệt nào do
+      // run này tạo nghĩa là tool bị khóa vì task đã đổi trạng thái: không có gì để chờ nên không treo ở waiting_approval.
+      if (!state.pendingApprovalId) {
+        await deps.orchestration.updateRunStatus(ai, run.id, {
+          status: 'cancelled',
+          errorCode: 'TASK_STATE_CHANGED',
+          errorMessage: 'Task đổi trạng thái trong lúc run đang chạy',
+        });
+        return;
+      }
+      // Phần ngân sách đang giữ được trả lại; lúc resume sẽ reserve lại (không đủ thì task `blocked`).
       await deps.budget.releaseRun(ai, run.id);
       await deps.orchestration.updateRunStatus(ai, run.id, { status: 'waiting_approval' });
       return;

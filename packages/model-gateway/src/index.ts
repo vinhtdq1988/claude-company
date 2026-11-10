@@ -17,6 +17,7 @@ export { MessagesApiProvider, type MessagesApiProviderOptions } from './provider
 export {
   ClaudeAgentSdkProvider,
   buildSdkEnv,
+  cliJsonSchema,
   MCP_SERVER_NAME,
   type ClaudeAgentSdkProviderOptions,
   type QueryFn,
@@ -26,6 +27,14 @@ export type ModelGatewayConfig =
   | {
       provider: 'fake';
       fake?: FakeModelProviderOptions;
+    }
+  | {
+      /**
+       * Chỉ để chạy local bằng đăng nhập subscription của Claude Code CLI (`MODEL_PROVIDER=claude_subscription`): cả hai
+       * runtime đi qua Agent SDK, không có API key. Production phải dùng `anthropic`.
+       */
+      provider: 'claude_subscription';
+      agentSdk?: Omit<ClaudeAgentSdkProviderOptions, 'apiKey' | 'subscription'>;
     }
   | {
       provider: 'anthropic';
@@ -47,6 +56,10 @@ export function createModelGateway(config: ModelGatewayConfig): ModelGateway {
   if (config.provider === 'fake') {
     const fake = new FakeModelProvider(config.fake);
     return new RoutingGateway({ claude_agent_sdk: fake, messages_api: fake });
+  }
+  if (config.provider === 'claude_subscription') {
+    const sdk = new ClaudeAgentSdkProvider({ ...config.agentSdk, subscription: true });
+    return new RoutingGateway({ claude_agent_sdk: sdk, messages_api: sdk });
   }
   return new RoutingGateway({
     claude_agent_sdk: new ClaudeAgentSdkProvider({ ...config.agentSdk, apiKey: config.apiKey }),

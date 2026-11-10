@@ -6,6 +6,7 @@ import { api, ApiError } from '../../lib/api';
 import { findUnit, flattenUnits } from '../org/org-tree';
 import { useMembers, useOrgChart } from '../org/org-queries';
 import { EmployeeForm } from './EmployeeForm';
+import { EmployeeUsageSection } from './EmployeeUsageSection';
 import { invalidateEmployees, useEmployee, useEmployees } from './employee-queries';
 import { managerName } from './EmployeeListPage';
 
@@ -155,6 +156,7 @@ export function EmployeeDetailPage({ companyId, employeeId, onBack }: Props) {
           {t('employee.detail.rework')}: {percent(e.performance.reworkRate)}
         </dd>
       </dl>
+      <EmployeeUsageSection companyId={companyId} employeeId={employeeId} />
     </section>
   );
 }

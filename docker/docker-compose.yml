@@ -1,12 +1,27 @@
 # Môi trường chạy local: docker compose -f docker/docker-compose.yml --env-file docker/.env up --build
-# sandbox-runner và egress-proxy do T111, T111a thêm vào file này.
+#
+# Mạng (R4, action-policy.md):
+#   backend (internal)  postgres, redis, minio, api, worker, egress-proxy. Không có đường ra internet.
+#   sandbox (internal)  chỉ worker và sandbox-runner. Lệnh của agent không với tới Postgres, Redis, MinIO,
+#                       API model hay internet.
+#   edge                api, web (cổng công bố ra host) và egress-proxy (lối ra internet duy nhất của worker).
 name: claude-company
+
+networks:
+  backend:
+    internal: true
+  sandbox:
+    internal: true
+  edge: {}
 
 x-app-env: &app-env
   MODEL_PROVIDER: ${MODEL_PROVIDER:-fake}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET là bắt buộc}
   ADAPTER_MODE: ${ADAPTER_MODE:-dry_run}
+  APPROVAL_REPLAY_AFTER_MS: ${APPROVAL_REPLAY_AFTER_MS:-120000}
+  APPROVAL_REMINDER_FIRST_MS: ${APPROVAL_REMINDER_FIRST_MS:-3600000}
+  APPROVAL_REMINDER_REPEAT_MS: ${APPROVAL_REMINDER_REPEAT_MS:-86400000}
   WORKSPACE_HOST_PATH: /workspaces
   BUDGET_WARN_THRESHOLD: ${BUDGET_WARN_THRESHOLD:-0.8}
   DEFAULT_MONTHLY_COST_LIMIT_USD: ${DEFAULT_MONTHLY_COST_LIMIT_USD:-20}
@@ -19,9 +34,8 @@ x-app-env: &app-env
   MAX_REWORK: ${MAX_REWORK:-3}
   RUN_TIMEOUT_MS: ${RUN_TIMEOUT_MS:-900000}
   RETRY_MAX: ${RETRY_MAX:-3}
-  EGRESS_PROXY_URL: ${EGRESS_PROXY_URL:-}
-  SANDBOX_RUNNER_URL: ${SANDBOX_RUNNER_URL:-}
-  SANDBOX_RUNNER_TOKEN: ${SANDBOX_RUNNER_TOKEN:-}
+  LOGIN_RATE_LIMIT_MAX: ${LOGIN_RATE_LIMIT_MAX:-10}
+  LOGIN_RATE_LIMIT_WINDOW_MS: ${LOGIN_RATE_LIMIT_WINDOW_MS:-900000}
   DATABASE_URL: ${DATABASE_URL:?DATABASE_URL là bắt buộc}
   DATABASE_MIGRATION_URL: ${DATABASE_MIGRATION_URL:?DATABASE_MIGRATION_URL là bắt buộc}
   APP_DB_PASSWORD: ${APP_DB_PASSWORD:?APP_DB_PASSWORD là bắt buộc}
@@ -40,6 +54,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-claude_company}
       POSTGRES_USER: ${POSTGRES_USER:-cc_owner}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD là bắt buộc}
+    networks: [backend]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -52,6 +67,7 @@ services:
   redis:
     image: redis:7
     command: ['redis-server', '--appendonly', 'yes']
+    networks: [backend]
     volumes:
       - redis_data:/data
     healthcheck:
@@ -66,6 +82,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY là bắt buộc}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY là bắt buộc}
+    # Cần `edge` chỉ để công bố cổng console cho dev; sandbox-runner không nối mạng này.
+    networks: [backend, edge]
     volumes:
       - minio_data:/data
     ports:
@@ -76,6 +94,24 @@ services:
       timeout: 3s
       retries: 10
 
+  # Chạy một lần: migration (role owner) rồi seed cấu hình toàn cục (cơ cấu mẫu, role template, bảng giá model).
+  # Cả hai idempotent nên `up` lại nhiều lần vẫn an toàn. api và worker chỉ khởi động sau khi bước này xong.
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    command:
+      - sh
+      - -c
+      - node --import @swc-node/register/esm-register ../../packages/db/src/migrate.ts && node --import @swc-node/register/esm-register ../../packages/db/src/seed.ts
+    environment:
+      <<: *app-env
+    networks: [backend]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
   api:
     build:
       context: ..
@@ -83,6 +119,9 @@ services:
     environment:
       <<: *app-env
       PORT: '3000'
+      # API đứng sau nginx (web): lấy IP người dùng từ X-Forwarded-For cho rate limit đăng nhập.
+      TRUST_PROXY: 'true'
+    networks: [backend, edge]
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,10 +129,23 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ${WORKSPACE_HOST_PATH:-./data/workspaces}:/workspaces:ro
     ports:
       - '127.0.0.1:3000:3000'
+
+  # Đặt owner/mode cho volume worktrees một lần: owner = worker (node, uid/gid 1000), mode 0711 để UID của
+  # sandbox chỉ đi qua được chứ không liệt kê được thư mục các run khác.
+  worktrees-init:
+    image: busybox:1.37
+    user: root
+    command: ['sh', '-c', 'chown 1000:1000 /worktrees && chmod 0711 /worktrees']
+    volumes:
+      - run_worktrees:/worktrees
+    network_mode: none
+    restart: 'no'
 
   worker:
     build:
@@ -101,6 +153,17 @@ services:
       dockerfile: docker/Dockerfile.worker
     environment:
       <<: *app-env
+      RUN_WORKTREES_PATH: /var/lib/claude-company/worktrees
+      DRY_RUN_LOG_PATH: /var/lib/claude-company/dry-run
+      SANDBOX_RUNNER_URL: http://sandbox-runner:8081
+      SANDBOX_RUNNER_TOKEN: ${SANDBOX_RUNNER_TOKEN:?SANDBOX_RUNNER_TOKEN là bắt buộc}
+      # Worker chỉ ra ngoài qua egress-proxy; Node 24 dùng các biến này khi NODE_USE_ENV_PROXY=1.
+      EGRESS_PROXY_URL: http://egress-proxy:3128
+      HTTPS_PROXY: http://egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,postgres,redis,minio,api,sandbox-runner
+      NODE_USE_ENV_PROXY: '1'
+    # Worker ở `backend` (Postgres, Redis, MinIO, egress-proxy) và `sandbox` (sandbox-runner), không có internet trực tiếp.
+    networks: [backend, sandbox]
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,15 +171,62 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      egress-proxy:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_healthy
+      worktrees-init:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ${WORKSPACE_HOST_PATH:-./data/workspaces}:/workspaces
       - run_worktrees:/var/lib/claude-company/worktrees
       - dry_run_data:/var/lib/claude-company/dry-run
 
+  # Nơi duy nhất chạy lệnh shell/test của agent. Chạy bằng root nhưng chỉ giữ CAP_CHOWN, CAP_SETUID, CAP_SETGID
+  # để chuẩn hóa owner thư mục run và hạ xuống UID riêng của run; env không có secret (chỉ token riêng của nó).
+  sandbox-runner:
+    build:
+      context: ./sandbox-runner
+    user: root
+    environment:
+      SANDBOX_TOKEN: ${SANDBOX_RUNNER_TOKEN:?SANDBOX_RUNNER_TOKEN là bắt buộc}
+      WORKER_GID: '1000'
+      WORKTREES_DIR: /worktrees
+      STATE_FILE: /var/lib/sandbox/uids.json
+    networks: [sandbox]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - run_worktrees:/worktrees
+      - sandbox_state:/var/lib/sandbox
+    depends_on:
+      worktrees-init:
+        condition: service_completed_successfully
+
+  # Lối ra internet duy nhất của worker: chỉ cho CONNECT tới host API model.
+  egress-proxy:
+    build:
+      context: ./egress-proxy
+    environment:
+      EGRESS_ALLOWLIST: ${EGRESS_ALLOWLIST:-api.anthropic.com}
+    networks: [backend, edge]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+
   web:
     build:
       context: ..
       dockerfile: docker/Dockerfile.web
+    networks: [edge]
     depends_on:
       - api
     ports:
@@ -128,3 +238,4 @@ volumes:
   minio_data:
   run_worktrees:
   dry_run_data:
+  sandbox_state:

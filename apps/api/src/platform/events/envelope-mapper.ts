@@ -11,7 +11,8 @@ export type EnvelopeSpec =
   | { room: 'company'; type: RealtimeEventType; payload: unknown; visibility: Visibility }
   | { room: 'user'; memberId: string; type: RealtimeEventType; payload: unknown };
 
-export type EnvelopeMapper = (event: DomainEvent) => EnvelopeSpec[];
+/** Có thể bất đồng bộ (ví dụ đọc dữ liệu chiếu đã commit); phải tất định theo `event`. */
+export type EnvelopeMapper = (event: DomainEvent) => EnvelopeSpec[] | Promise<EnvelopeSpec[]>;
 
 const SEQ_ADVANCED: EnvelopeSpec = {
   room: 'company',
@@ -33,10 +34,9 @@ export class EnvelopeMapperRegistry {
     this.mappers.push({ prefix, mapper });
   }
 
-  map(event: DomainEvent): EnvelopeSpec[] {
-    const specs = this.mappers
-      .filter((m) => m.prefix === '*' || event.type.startsWith(m.prefix))
-      .flatMap((m) => m.mapper(event));
+  async map(event: DomainEvent): Promise<EnvelopeSpec[]> {
+    const matched = this.mappers.filter((m) => m.prefix === '*' || event.type.startsWith(m.prefix));
+    const specs = (await Promise.all(matched.map((m) => m.mapper(event)))).flat();
     return specs.some((s) => s.room === 'company') ? specs : [...specs, SEQ_ADVANCED];
   }
 }

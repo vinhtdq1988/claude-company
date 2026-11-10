@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
   DomainError,
+  type BudgetService,
   type EmployeeEngine,
   type EmployeeFilter,
   type EmployeeProfile,
@@ -22,7 +23,12 @@ import {
 import { newId, withGlobal, type Tx } from '@claude-company/db';
 import { validateToolGrants } from '@claude-company/policy';
 import { sql } from 'drizzle-orm';
-import { MODEL_CATALOG, ORGANIZATION_ENGINE, TASK_ENGINE } from '../../platform/engine-tokens';
+import {
+  BUDGET_SERVICE,
+  MODEL_CATALOG,
+  ORGANIZATION_ENGINE,
+  TASK_ENGINE,
+} from '../../platform/engine-tokens';
 import { EventPublisher } from '../../platform/events/event-publisher';
 import { inTenant } from '../../platform/tenancy/tenant-store';
 import { EmployeeRepository, type EmployeeRow } from './employee.repository';
@@ -94,6 +100,11 @@ export class EmployeeService implements EmployeeEngine {
     'getOrgUnit' | 'listTeamMemberships' | 'setTeamMembers'
   > {
     return this.moduleRef.get<OrganizationEngine>(ORGANIZATION_ENGINE, { strict: false });
+  }
+
+  /** Lấy muộn qua ModuleRef: `BudgetService` cũng hỏi ngược `EmployeeEngine` (phạm vi của nhân viên). */
+  private get budget(): Pick<BudgetService, 'allowedModelsFor'> {
+    return this.moduleRef.get<BudgetService>(BUDGET_SERVICE, { strict: false });
   }
 
   async getWorkspace(ctx: RequestContext, id: string): Promise<Workspace> {
@@ -453,6 +464,25 @@ export class EmployeeService implements EmployeeEngine {
           'VALIDATION_FAILED',
           'Đơn vị của nhân viên phải là một department đang hoạt động',
           { field: 'homeOrgUnitId' },
+        );
+      }
+    }
+    if (touched('modelId', 'homeOrgUnitId')) {
+      // `allowed_models` hiệu lực của công ty, đơn vị (và tổ tiên), team, chính nhân viên (US6-AS5).
+      const employeeId = update?.previous.id;
+      const memberships = employeeId ? await this.organization.listTeamMemberships(ctx) : [];
+      const allowed = await this.budget.allowedModelsFor(ctx, {
+        homeOrgUnitId: profile.homeOrgUnitId,
+        employeeId,
+        teamIds: memberships
+          .filter((m) => m.memberKind === 'ai' && m.memberId === employeeId)
+          .map((m) => m.teamId),
+      });
+      if (allowed !== null && !allowed.includes(profile.modelId)) {
+        throw new DomainError(
+          'MODEL_NOT_ALLOWED',
+          'Model không nằm trong danh sách được phép ở phạm vi của nhân viên',
+          { field: 'modelId', modelId: profile.modelId, allowedModels: allowed },
         );
       }
     }

@@ -18,7 +18,7 @@ export const DOMAIN_EVENT_CHANNEL = 'cc:domain-events';
 const BATCH = 100;
 
 /**
- * Đẩy domain_event chưa phát sang Redis pub/sub (cho mọi instance realtime) và event bus nội bộ.
+ * Đẩy domain_event chưa phát sang bộ chiếu, Redis pub/sub (cho mọi instance realtime) rồi event bus nội bộ.
  * Giao ít nhất một lần: nếu chết giữa chừng thì lần sau phát lại; client dựa vào `seq` để khử trùng.
  * Khóa advisory theo company bảo đảm chỉ một relay xử lý mỗi company tại một thời điểm.
  */
@@ -80,6 +80,8 @@ export class OutboxRelay implements OnModuleInit, OnModuleDestroy {
         .limit(BATCH);
       for (const row of rows) {
         const event = toDomainEvent(row);
+        // Chiếu trước, phát sau: gateway và client chỉ thấy sự kiện khi dữ liệu chiếu của nó đã commit.
+        await this.bus.project(event);
         await this.redis.publish(DOMAIN_EVENT_CHANNEL, JSON.stringify(event));
         await this.bus.emit(event);
         await tx

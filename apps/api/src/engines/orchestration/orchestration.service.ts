@@ -15,11 +15,13 @@ import {
   type OrganizationEngine,
   type OrgChartNode,
   type Page,
+  type PermissionEngine,
   type PermissionLevel,
   type RecoveryReport,
   type RequestContext,
   type ReviewResult,
   type RunEventInput,
+  type RunListFilter,
   type RunPurpose,
   type RunStatus,
   type RunStepInput,
@@ -39,6 +41,7 @@ import {
   BUDGET_SERVICE,
   EMPLOYEE_ENGINE,
   ORGANIZATION_ENGINE,
+  PERMISSION_ENGINE,
   TASK_ENGINE,
   TOOL_ADAPTER_LOOKUP,
 } from '../../platform/engine-tokens';
@@ -67,6 +70,9 @@ const JOB_FOR_PURPOSE: Record<RunPurpose, JobName> = {
 
 /** Run `queued` cũ hơn ngưỡng này mà chưa chạy: job có thể đã mất, enqueue lại (BullMQ khử trùng theo jobId). */
 const QUEUED_REPLAY_AFTER_MS = 2 * 60_000;
+
+/** Khung thời gian của jobId phát lại: tối đa một lần phát lại mỗi yêu cầu phê duyệt trong mỗi khung. */
+const APPROVAL_REPLAY_BUCKET_MS = 5 * 60_000;
 
 const SYSTEM = (ctx: RequestContext): RequestContext => ({ ...ctx, actor: { kind: 'system' } });
 
@@ -104,6 +110,9 @@ export class OrchestrationService implements OrchestrationEngine {
   }
   private get organization(): OrganizationEngine {
     return this.moduleRef.get<OrganizationEngine>(ORGANIZATION_ENGINE, { strict: false });
+  }
+  private get permission(): PermissionEngine {
+    return this.moduleRef.get<PermissionEngine>(PERMISSION_ENGINE, { strict: false });
   }
   private get budget(): BudgetService {
     return this.moduleRef.get<BudgetService>(BUDGET_SERVICE, { strict: false });
@@ -498,12 +507,10 @@ export class OrchestrationService implements OrchestrationEngine {
     });
   }
 
-  async listRuns(
-    ctx: RequestContext,
-    filter: { taskId?: string; employeeId?: string },
-  ): Promise<Page<AgentRunSummary>> {
+  async listRuns(ctx: RequestContext, filter: RunListFilter): Promise<Page<AgentRunSummary>> {
+    const { limit, ...rest } = filter;
     const rows = await inTenant(ctx, (tx) =>
-      this.repo.listRuns(tx, ctx.companyId, { ...filter, limit: 200 }),
+      this.repo.listRuns(tx, ctx.companyId, { ...rest, limit: Math.min(limit ?? 200, 200) }),
     );
     return { items: rows.map(toRunSummary), nextCursor: null };
   }
@@ -521,9 +528,53 @@ export class OrchestrationService implements OrchestrationEngine {
     }));
   }
 
-  async resumeAfterApproval(): Promise<void> {
-    // Human Approval thuộc US4: từ US3 đến khi xong US4, ToolBroker từ chối (fail-closed) mọi hành động human_approval (D6).
-    throw new DomainError('INTERNAL', 'Human Approval chưa được triển khai (US4)');
+  /**
+   * Sau `approval.decided` (US4). Duyệt → xếp job `action.execute-approved` (hệ thống, không phải agent, thực thi đúng
+   * payload đã duyệt rồi mới resume run). Từ chối → ghi `denied` và resume run ngay để agent nhận lý do.
+   * Idempotent: `jobId` ổn định theo yêu cầu nên sự kiện giao lại không tạo job thứ hai.
+   */
+  async resumeAfterApproval(
+    ctx: RequestContext,
+    approvalRequestId: string,
+    options: { replay?: boolean } = {},
+  ): Promise<void> {
+    const approval = await this.permission.getApproval(ctx, approvalRequestId);
+    if (approval.status !== 'approved' && approval.status !== 'rejected') return; // pending hoặc đã hủy
+    const run = await inTenant(ctx, (tx) => this.repo.findRun(tx, ctx.companyId, approval.runId));
+    if (!run) return;
+    const replay = options.replay
+      ? String(Math.floor(Date.now() / APPROVAL_REPLAY_BUCKET_MS))
+      : undefined;
+    const suffix = replay ? `-r${replay}` : '';
+    const payload = {
+      companyId: ctx.companyId,
+      taskId: approval.taskId,
+      runId: run.id,
+      employeeId: run.aiEmployeeId,
+      purpose: run.purpose,
+      traceId: run.traceId,
+      approvalRequestId,
+      ...(replay ? { replay } : {}),
+    };
+    if (approval.status === 'approved') {
+      await this.queue.enqueue('action.execute-approved', payload, {
+        jobId: `exec-approved-${approvalRequestId}${suffix}`,
+      });
+      return;
+    }
+    await inTenant(ctx, (tx) =>
+      this.repo.updateInvocation(tx, ctx.companyId, approval.toolInvocationId, {
+        status: 'denied',
+        result: { rejected: true, message: approval.decisionReason ?? 'Bị từ chối' },
+      }),
+    );
+    await this.queue.enqueue('run.resume', payload, {
+      jobId: `resume-${approvalRequestId}${suffix}`,
+    });
+  }
+
+  async claimToolInvocation(ctx: RequestContext, id: string): Promise<boolean> {
+    return inTenant(ctx, (tx) => this.repo.claimInvocation(tx, ctx.companyId, id));
   }
 
   // --- hủy và phục hồi ---
@@ -564,20 +615,30 @@ export class OrchestrationService implements OrchestrationEngine {
         actor: { kind: 'system' },
         traceId: `recovery-${Date.now()}`,
       };
-      const { stale, queued } = await inTenant(ctx, async (tx) => ({
-        stale: await this.repo.listStaleRuns(
-          tx,
-          company_id,
-          new Date(Date.now() - this.config.RUN_STALE_AFTER_MS),
-        ),
-        queued: (
-          await this.repo.listRuns(tx, company_id, { limit: 200 })
-        ).filter(
-          (r) =>
-            r.status === 'queued' &&
-            Date.now() - r.createdAt.getTime() > QUEUED_REPLAY_AFTER_MS,
-        ),
-      }));
+      const { stale, queued, waiting } = await inTenant(ctx, async (tx) => {
+        const recent = await this.repo.listRuns(tx, company_id, { limit: 200 });
+        return {
+          stale: await this.repo.listStaleRuns(
+            tx,
+            company_id,
+            new Date(Date.now() - this.config.RUN_STALE_AFTER_MS),
+          ),
+          queued: recent.filter(
+            (r) =>
+              r.status === 'queued' && Date.now() - r.createdAt.getTime() > QUEUED_REPLAY_AFTER_MS,
+          ),
+          // Run chờ duyệt mà quyết định đã có từ lâu nhưng vẫn chưa tiến triển: job có thể đã mất.
+          waiting: recent.filter(
+            (r) =>
+              r.status === 'waiting_approval' &&
+              Date.now() - r.updatedAt.getTime() > this.config.APPROVAL_REPLAY_AFTER_MS,
+          ),
+        };
+      });
+
+      for (const run of waiting) {
+        report.recovered += await this.replayDecidedApprovals(ctx, run);
+      }
 
       for (const run of queued) {
         await this.dispatch(ctx, run);
@@ -589,6 +650,23 @@ export class OrchestrationService implements OrchestrationEngine {
       }
     }
     return report;
+  }
+
+  /**
+   * Run `waiting_approval` mà yêu cầu của nó đã được quyết định: phát lại job thực thi/resume. An toàn khi job gốc vẫn
+   * còn sống vì thực thi được chiếm bằng cập nhật có điều kiện và resume kiểm tra trạng thái run.
+   * Yêu cầu chưa quyết định thì không đụng tới: chờ người duyệt không phải lỗi.
+   */
+  private async replayDecidedApprovals(ctx: RequestContext, run: RunRow): Promise<number> {
+    const { items } = await this.permission.listApprovals(ctx, { taskId: run.taskId, limit: 50 });
+    let replayed = 0;
+    for (const approval of items) {
+      if (approval.runId !== run.id) continue;
+      if (approval.status !== 'approved' && approval.status !== 'rejected') continue;
+      await this.resumeAfterApproval(ctx, approval.id, { replay: true });
+      replayed += 1;
+    }
+    return replayed;
   }
 
   /** `true` nếu run được đưa lại vào hàng đợi, `false` nếu bị đánh dấu lỗi. */

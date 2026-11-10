@@ -12,6 +12,7 @@ export const JOB_NAMES = [
   'task.decompose',
   'task.synthesize',
   'review.run',
+  'office.completed-elapsed',
 ] as const;
 export type JobName = (typeof JOB_NAMES)[number];
 
@@ -23,6 +24,13 @@ export type JobPayload = {
 };
 
 export const QUEUE_NAME = 'claude-company';
+
+/**
+ * Job idempotent nên được BullMQ thử lại khi lỗi hạ tầng tạm thời (DB, Redis chập chờn): thực thi hành động đã duyệt
+ * được chiếm bằng cập nhật có điều kiện, còn resume run kiểm tra trạng thái run. Nếu không, lỗi thoáng qua làm run
+ * treo ở `waiting_approval` dù đã có quyết định.
+ */
+const RETRYABLE_JOBS: ReadonlySet<JobName> = new Set<JobName>(['action.execute-approved', 'run.resume']);
 
 const LOCK_PREFIX = 'lock:task:';
 const RELEASE_SCRIPT = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end`;
@@ -72,6 +80,9 @@ export class QueueService implements OnModuleDestroy {
     const job = await this.queue.add(name, payload, {
       jobId: options.jobId,
       delay: options.delayMs,
+      ...(RETRYABLE_JOBS.has(name)
+        ? { attempts: 5, backoff: { type: 'exponential' as const, delay: 2_000 } }
+        : {}),
       removeOnComplete: { age: 3600, count: 1000 },
       removeOnFail: { age: 7 * 24 * 3600 },
     });

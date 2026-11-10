@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { milestoneKeySchema } from './gamification';
 
 /** Sự kiện miền ghi trong bảng domain_event (outbox). */
 export type DomainEvent = {
@@ -47,8 +48,20 @@ export const officeEmployeeStatusChangedSchema = z.object({
   sourceEventType: z.string(),
 });
 
+/** Lý do thay đổi bố cục, đi kèm `office.layout_changed`; client luôn tải lại snapshot. */
+export const OFFICE_LAYOUT_REASONS = [
+  'org_unit_created',
+  'org_unit_updated',
+  'org_unit_archived',
+  'employee_added',
+  'employee_updated',
+  'employee_moved',
+  'employee_removed',
+] as const;
+export type OfficeLayoutReason = (typeof OFFICE_LAYOUT_REASONS)[number];
+
 export const officeLayoutChangedSchema = z.object({
-  reason: z.enum(['org_unit_created', 'org_unit_archived', 'employee_moved']),
+  reason: z.enum(OFFICE_LAYOUT_REASONS),
 });
 
 export const taskStatusChangedSchema = z.object({
@@ -81,7 +94,7 @@ export const usageUpdatedSchema = z.object({
   costDelta: z.number(),
 });
 
-export const milestoneAchievedSchema = z.object({ key: z.string() });
+export const milestoneAchievedSchema = z.object({ key: milestoneKeySchema });
 
 export const syncSeqAdvancedSchema = z.object({}).strict();
 

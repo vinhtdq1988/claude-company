@@ -15,6 +15,7 @@ export const INPUT_TAGS = [
   'subtask_results',
   'review_round',
   'directive',
+  'approval_result',
 ] as const;
 export type InputTag = (typeof INPUT_TAGS)[number];
 

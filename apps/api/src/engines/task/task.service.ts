@@ -421,13 +421,17 @@ export class TaskService implements TaskEngine {
 
   async getStats(
     ctx: RequestContext,
-    filter: { employeeId?: string; orgUnitId?: string },
+    filter: { employeeId?: string; orgUnitId?: string; scope?: ManagedScope },
   ): Promise<TaskStats> {
     let assignees: AssigneeSets | undefined;
     if (filter.employeeId) {
       assignees = { employeeIds: [filter.employeeId], teamIds: [], orgUnitIds: [] };
-    } else if (filter.orgUnitId) {
-      assignees = await this.expandOrgUnit(ctx, filter.orgUnitId);
+    } else {
+      // Dashboard của Manager: giao phạm vi quản lý với bộ lọc đơn vị, giống `list`.
+      assignees = await this.resolveAssignees(ctx, {
+        scope: filter.scope,
+        orgUnitId: filter.orgUnitId,
+      });
     }
     const rows = await inTenant(ctx, (tx) =>
       this.repo.statsRows(tx, ctx.companyId, {

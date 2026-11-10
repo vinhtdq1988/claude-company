@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, mkdir, stat } from 'node:fs/promises';
+import { chmod, cp, mkdir, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { Workspace } from '@claude-company/contracts';
@@ -60,14 +60,30 @@ export class RunWorkspaceManager {
 
     const previous = input.previousRunId ? this.dirOf(input.previousRunId) : null;
     if (previous && (await exists(previous))) {
-      await cp(previous, dir, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+      await cp(previous, dir, {
+        recursive: true,
+        preserveTimestamps: true,
+        verbatimSymlinks: true,
+      });
     } else if (input.source) {
       await this.populateFromSource(dir, input.runId, input.source);
     } else {
       await mkdir(dir, { recursive: true });
     }
+    await this.normalizeModes(dir);
     await this.options.sandbox.prepare({ runId: input.runId });
     return { runId: input.runId, dir, kind: input.source?.kind ?? 'empty' };
+  }
+
+  /**
+   * Thư mục run do worker tạo (owner = worker) nên chỉ worker đổi được mode. `sandbox-runner` chỉ có CAP_CHOWN,
+   * SETUID, SETGID (không có DAC_OVERRIDE): cây con phải đọc/duyệt được thì nó mới chown được sang UID của run.
+   * Thư mục gốc của run trở lại `2770` (setgid, group worker) nên UID khác vẫn không vào được.
+   */
+  private async normalizeModes(dir: string): Promise<void> {
+    if (process.platform === 'win32') return; // Không có UID/group kiểu POSIX; chỉ chạy dev không Docker.
+    await execFileAsync('chmod', ['-R', 'a+rX', dir]);
+    await chmod(dir, 0o2770);
   }
 
   private async populateFromSource(
@@ -83,7 +99,9 @@ export class RunWorkspaceManager {
       await cp(mount, dir, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
       return;
     }
-    const git = this.options.git ?? ((args, cwd) => execFileAsync('git', args, { cwd }).then(() => undefined));
+    const git =
+      this.options.git ??
+      ((args, cwd) => execFileAsync('git', args, { cwd }).then(() => undefined));
     await git(['clone', '--local', '--no-hardlinks', mount, dir]);
     await git(['checkout', '-b', `cc/run-${runId}`], dir);
     await git(['config', 'user.name', 'Claude Company Agent'], dir);

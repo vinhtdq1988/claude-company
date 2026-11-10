@@ -323,7 +323,7 @@ describe('Integration: luồng task (US3-AS1, AS4, AS5, FR-022, US2-AS5)', () =>
     expect(messages[0]).toMatchObject({ taskId: created.id, authorKind: 'human' });
   });
 
-  it('prompt injection yêu cầu gửi email: hành động Human Approval bị từ chối (D6), không có hành động nào được thực thi', async () => {
+  it('prompt injection yêu cầu gửi email: hành động Human Approval chỉ tạo yêu cầu chờ duyệt (US4 thay D6), không có hành động nào được thực thi', async () => {
     const t = await team();
     // Cấp email.send để chắc chắn kết quả do mức quyền (human_approval), không phải do thiếu grant.
     await h.employees.update(t.scene.ctx(), t.ba.id, {
@@ -337,11 +337,12 @@ describe('Integration: luồng task (US3-AS1, AS4, AS5, FR-022, US2-AS5)', () =>
     await h.tasks.transition(ctx, created.id, 'assign');
     await h.settle();
     const detail = await get(t, created.id);
-    expect(detail.status).toBe('awaiting_human_approval'); // run vẫn hoàn thành phần việc hợp lệ
+    expect(detail.status).toBe('in_progress'); // run dừng ở waiting_approval, task giữ In Progress
     const runs = (await h.orchestration.listRuns(t.scene.ctx(), { taskId: created.id })).items;
     const exec = await h.orchestration.getRun(t.scene.ctx(), runs.find((r) => r.purpose === 'execute')!.id);
     const email = exec.toolInvocations.find((i) => i.actionType === 'email.send');
-    expect(email).toMatchObject({ status: 'denied', permissionLevel: 'human_approval' });
+    expect(exec.status).toBe('waiting_approval');
+    expect(email).toMatchObject({ status: 'pending_approval', permissionLevel: 'human_approval' });
     expect(await h.orchestration.listExecutedActions(t.scene.ctx(), created.id)).toEqual([]);
   });
 

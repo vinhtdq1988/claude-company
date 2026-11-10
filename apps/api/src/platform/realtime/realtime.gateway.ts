@@ -243,7 +243,7 @@ export class RealtimeGateway implements OnApplicationBootstrap, OnApplicationShu
     if (!scope) return;
     const viewer = { memberId, scope };
 
-    const specs: EnvelopeSpec[] = this.mappers.map(event);
+    const specs: EnvelopeSpec[] = await this.mappers.map(event);
     let emittedCompany = false;
     for (const spec of specs) {
       if (spec.room === 'company') {

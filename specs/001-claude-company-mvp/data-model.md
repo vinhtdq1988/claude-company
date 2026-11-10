@@ -232,7 +232,8 @@ Quy tắc bổ sung:
 ### approval_request
 | Trường | Kiểu | Ghi chú |
 |---|---|---|
-| tool_invocation_id | uuid | UNIQUE |
+| tool_invocation_id | uuid | UNIQUE; không có FK vì bảng thuộc Orchestration Engine |
+| agent_run_id | uuid | run đang chờ duyệt (để `resumeAfterApproval` biết run nào cần tiếp tục) |
 | task_id, ai_employee_id | uuid | ngữ cảnh (FR-026) |
 | action_type | text | |
 | summary | text | AI định làm gì |
@@ -240,7 +241,7 @@ Quy tắc bổ sung:
 | payload | jsonb | đúng payload sẽ thực thi |
 | payload_hash | text | thực thi chỉ khi hash khớp |
 | approver_member_id | uuid? | mặc định `task.created_by_member_id`; người này bị vô hiệu thì chuyển cho CEO |
-| status | enum `pending`,`approved`,`rejected`,`cancelled` | không có `expired`/auto-approve |
+| status | enum `pending`,`approved`,`rejected`,`cancelled` | không có `expired`/auto-approve; `pending` → `cancelled` khi task bị hủy hoặc rời `in_progress` (kèm bản ghi ledger `failed`) |
 | decided_by, decided_at, decision_reason | | lý do bắt buộc với mọi quyết định |
 | last_reminded_at | timestamptz? | |
 
@@ -254,6 +255,9 @@ Quy tắc bổ sung:
 
 ### budget_reservation
 `agent_run_id`, `scopes jsonb`, `reserved_tokens`, `reserved_cost`, `status` enum `held`,`committed`,`released`. Tổng đã dùng + đang giữ không vượt giới hạn. Runtime `claude_agent_sdk` giữ một reservation `held` trong lúc run chạy; run chết thì sweeper release. Khi run chuyển `waiting_approval`, phần đang giữ được release; lúc resume reserve lại, không đủ thì task `blocked`.
+
+### budget_warning_log (T168)
+`scope_kind`, `scope_id`, `period`, `metric` (`tokens`|`cost`), `limit_value`, `threshold`. UNIQUE(company_id, scope_kind, scope_id, period, metric, limit_value, threshold). `BudgetService.commit` ghi một dòng khi mức dùng của phạm vi đạt `limit × threshold`; chèn thành công mới cảnh báo, nên mỗi ngưỡng cảnh báo đúng một lần mỗi kỳ. Đổi giới hạn hoặc ngưỡng tạo ra khóa mới nên được cảnh báo lại.
 
 ### model_price (cấu hình)
 `model_id`, `input_per_mtok`, `output_per_mtok`, `cache_read_per_mtok`, `cache_write_per_mtok`, `effective_from`.
@@ -270,8 +274,16 @@ Quy tắc bổ sung:
 
 Bất biến: mỗi lần đổi `state` phải có `source_event_seq` trỏ tới một `domain_event` có thật (SC-006).
 
+Cột bổ sung (T151): `suspended boolean` (nhân viên đang tạm ngưng → hiển thị `break`), `tracks jsonb` (các "đường chạy" theo `taskId`: `runId`, `state`, `tool`, `progress`, `reason`, `seq`; trạng thái hiển thị là kết quả gộp, ưu tiên `error_blocked` > `waiting_approval` > hoạt động > `completed`, cùng hạng lấy sự kiện gần nhất) và `applied_seq` (bỏ qua sự kiện giao lại). PK là (`company_id`, `ai_employee_id`).
+
+### employee_status_change (nhật ký, T151)
+`company_id`, `seq` (của `domain_event` nguồn), `ai_employee_id`, `state`, `previous_state`, `current_task_id?`, `current_tool?`, `progress?`, `source_event_type`, `occurred_at`. PK (`company_id`, `seq`, `ai_employee_id`). Mỗi dòng là một lần đổi hiển thị; gateway dựng `office.employee_status_changed` từ đây nên phát trực tiếp và phát lại theo `sinceSeq` cho cùng kết quả, và đối chiếu SC-006 không phải suy ngược từ trạng thái mới nhất. Chưa có chính sách dọn (≥ 10 phút theo realtime-events.md là mức tối thiểu).
+
+### office_cursor (T151)
+`company_id` PK, `applied_seq`: projection đã gấp mọi `domain_event` có `seq <= applied_seq`. `GET /office/snapshot` trả đúng mốc này.
+
 ### office_zone
-`kind` enum `department`,`ceo_office`,`break_room`, `org_unit_id?`, `layout jsonb` (vị trí ô, sinh tất định). Tạo/cập nhật tự động khi department thay đổi.
+`kind` enum `department`,`ceo_office`,`break_room`, `org_unit_id?`, `name`, `layout jsonb` (`{x, y, cols, rows}` trên lưới ô, sinh tất định). Tạo/cập nhật tự động khi department hoặc nhân viên thay đổi. Chỉ department có zone; division chỉ có zone khi có nhân viên "nhà" trực tiếp. UNIQUE(`company_id`, `org_unit_id`) và mỗi công ty đúng một `ceo_office`, một `break_room`.
 
 ## Communication Engine
 

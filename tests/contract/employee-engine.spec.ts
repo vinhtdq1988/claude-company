@@ -11,6 +11,7 @@ import { EmployeeRepository } from '../../apps/api/src/engines/employee/employee
 import { EmployeeService } from '../../apps/api/src/engines/employee/employee.service';
 import { HumanMemberService } from '../../apps/api/src/engines/employee/human-member.service';
 import {
+  BUDGET_SERVICE,
   IDENTITY_DIRECTORY,
   MODEL_CATALOG,
   ORGANIZATION_ENGINE,
@@ -34,6 +35,8 @@ describe('Contract: EmployeeEngine (T061)', () => {
   const tasks = new FakeTaskEngine();
   const identity = new FakeIdentityDirectory();
   const KNOWN_MODELS = new Set(['claude-opus-5-5', 'claude-sonnet-5-5']);
+  /** `allowed_models` hiệu lực theo đơn vị nhà, thay cho `BudgetService.allowedModelsFor` thật (US6-AS5). */
+  const allowedByUnit = new Map<string, string[]>();
 
   const companyA = newId();
   const companyB = newId();
@@ -128,6 +131,13 @@ describe('Contract: EmployeeEngine (T061)', () => {
           provide: MODEL_CATALOG,
           useValue: { hasModel: async (id: string) => KNOWN_MODELS.has(id) },
         },
+        {
+          provide: BUDGET_SERVICE,
+          useValue: {
+            allowedModelsFor: async (_ctx: RequestContext, target: { homeOrgUnitId: string }) =>
+              allowedByUnit.get(target.homeOrgUnitId) ?? null,
+          },
+        },
       ],
     }).compile();
     engine = moduleRef.get(EmployeeService);
@@ -190,6 +200,32 @@ describe('Contract: EmployeeEngine (T061)', () => {
       await expect(engine.create(A, profile({ modelId: 'gpt-khong-co' }))).rejects.toMatchObject({
         code: 'MODEL_NOT_ALLOWED',
       });
+    });
+
+    it('MODEL_NOT_ALLOWED khi model nằm ngoài allowed_models hiệu lực của đơn vị (US6-AS5)', async () => {
+      allowedByUnit.set(units.qa, ['claude-sonnet-5-5']);
+      try {
+        await expect(
+          engine.create(A, profile({ homeOrgUnitId: units.qa, modelId: 'claude-opus-5-5' })),
+        ).rejects.toMatchObject({
+          code: 'MODEL_NOT_ALLOWED',
+          details: { allowedModels: ['claude-sonnet-5-5'] },
+        });
+        const ok = await engine.create(
+          A,
+          profile({ name: 'QA đúng model', homeOrgUnitId: units.qa, modelId: 'claude-sonnet-5-5' }),
+        );
+        // Đổi model hoặc chuyển đơn vị sang phạm vi hạn chế cũng bị kiểm tra lại.
+        await expect(engine.update(A, ok.id, { modelId: 'claude-opus-5-5' })).rejects.toMatchObject({
+          code: 'MODEL_NOT_ALLOWED',
+        });
+        const dev = await engine.create(A, profile({ name: 'Dev chuyển đơn vị' }));
+        await expect(
+          engine.update(A, dev.id, { homeOrgUnitId: units.qa }),
+        ).rejects.toMatchObject({ code: 'MODEL_NOT_ALLOWED' });
+      } finally {
+        allowedByUnit.delete(units.qa);
+      }
     });
 
     it('tool_grants phải thuộc danh mục và khớp runtime; AI Manager chỉ messages_api', async () => {
@@ -442,6 +478,11 @@ describe('Contract: EmployeeEngine (T061)', () => {
         `insert into "user"(id,email,password_hash,display_name) values (gen_random_uuid(),$1,'h','root') returning id`,
         [`root-${randomUUID().slice(0, 6)}@example.com`],
       );
+      identity.add({
+        id: u.rows[0]!.id,
+        email: `root-${u.rows[0]!.id}@example.com`,
+        displayName: 'root',
+      });
       const root = await engine.addHumanMember(A, { userId: u.rows[0]!.id, role: 'manager' });
       const m = await aiManager('Manager của root', { kind: 'human', id: root.id });
       await engine.create(A, profile({ name: 'Dưới manager', manager: { kind: 'ai', id: m.id } }));

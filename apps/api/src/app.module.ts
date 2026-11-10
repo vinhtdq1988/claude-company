@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { CommunicationModule } from './engines/communication/communication.module';
 import { EmployeeModule } from './engines/employee/employee.module';
+import { GamificationModule } from './engines/gamification/gamification.module';
 import { MemoryModule } from './engines/memory/memory.module';
+import { OfficeSimulationModule } from './engines/office-simulation/office-simulation.module';
 import { OrchestrationModule } from './engines/orchestration/orchestration.module';
 import { OrganizationModule } from './engines/organization/organization.module';
 import { PermissionModule } from './engines/permission/permission.module';
@@ -28,6 +30,8 @@ import { TenantGuard } from './platform/tenancy/tenant.guard';
     CommunicationModule,
     MemoryModule,
     OrchestrationModule,
+    OfficeSimulationModule,
+    GamificationModule,
   ],
   providers: [
     { provide: APP_GUARD, useClass: SessionGuard },

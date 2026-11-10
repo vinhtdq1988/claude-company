@@ -2,11 +2,16 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
   DomainError,
+  type BudgetPolicy,
+  type BudgetScopeKind,
   type BudgetService,
+  type ConcurrencyLimit,
   type EmployeeEngine,
   type EmployeeProfile,
   type LimitRef,
-  type OrgChartNode,
+  type ManagedScope,
+  type ModelCatalog,
+  type PutBudgetPolicyBody,
   type OrganizationEngine,
   type RequestContext,
   type TaskEngine,
@@ -14,13 +19,25 @@ import {
   type UsageSummary,
 } from '@claude-company/contracts';
 import { newId, type Tx } from '@claude-company/db';
-import { budgetPolicy, budgetReservation, usageLedger } from '@claude-company/db/schema/usage';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import {
+  budgetPolicy,
+  budgetReservation,
+  budgetWarningLog,
+  usageLedger,
+} from '@claude-company/db/schema/usage';
+import { and, eq, inArray, or, sql, type SQL } from 'drizzle-orm';
 import type { AppConfig } from '../config/config';
 import { CONFIG } from '../config/infra.providers';
-import { EMPLOYEE_ENGINE, ORGANIZATION_ENGINE, TASK_ENGINE } from '../engine-tokens';
+import { EventPublisher } from '../events/event-publisher';
+import {
+  EMPLOYEE_ENGINE,
+  MODEL_CATALOG,
+  ORGANIZATION_ENGINE,
+  TASK_ENGINE,
+} from '../engine-tokens';
 import { inTenant } from '../tenancy/tenant-store';
 import { periodOf } from './cost';
+import { chartHasTeam, findNode, subtreeIds } from './org-tree';
 
 type ScopeRef = { kind: 'company' | 'org_unit' | 'team' | 'ai_employee'; id: string };
 
@@ -36,19 +53,6 @@ type Totals = { tokens: number; cost: number };
 
 const EPSILON = 1e-9;
 
-function findNode(nodes: readonly OrgChartNode[], id: string): OrgChartNode | undefined {
-  for (const node of nodes) {
-    if (node.id === id) return node;
-    const found = findNode(node.children, id);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function subtreeIds(node: OrgChartNode): string[] {
-  return [node.id, ...node.children.flatMap(subtreeIds)];
-}
-
 /**
  * Budget Service lõi (R6, Nguyên tắc V): chặn *trước* khi tiêu. `reserve` kiểm tra mọi scope áp dụng cho nhân viên
  * (company → org_unit → team → ai_employee) và trần của task trong một transaction được khóa theo (công ty, kỳ),
@@ -60,6 +64,8 @@ export class UsageBudgetService implements BudgetService {
   constructor(
     @Inject(CONFIG) private readonly config: AppConfig,
     private readonly moduleRef: ModuleRef,
+    @Inject(MODEL_CATALOG) private readonly models: Pick<ModelCatalog, 'hasModel'>,
+    private readonly events: EventPublisher,
   ) {}
 
   private get employees(): EmployeeEngine {
@@ -226,10 +232,6 @@ export class UsageBudgetService implements BudgetService {
         sql`select pg_advisory_xact_lock(hashtextextended(${`budget:${ctx.companyId}:${reservation.period}`}, 0))`,
       );
       const limits = await this.effectiveLimits(tx, ctx, scopes);
-      const before = new Map<string, Totals>();
-      for (const limit of limits) {
-        before.set(key(limit.scope), await this.ledgerTotals(tx, ctx, limit.scope, reservation.period));
-      }
 
       const [held] = await tx
         .select()
@@ -278,29 +280,39 @@ export class UsageBudgetService implements BudgetService {
         })
         .where(eq(budgetReservation.id, reservationId));
 
-      // Cảnh báo một lần khi lượt này làm mức dùng (đã dùng, không tính phần giữ) vượt ngưỡng (R6).
+      // Cảnh báo khi mức dùng (đã dùng, không tính phần giữ) đạt ngưỡng (R6). Mỗi (phạm vi, kỳ, loại, giới hạn,
+      // ngưỡng) chỉ cảnh báo một lần nhờ `budget_warning_log`: chen ngang, giao lại, hay hạ ngưỡng xuống dưới mức
+      // đang dùng đều không sinh cảnh báo trùng, còn đổi giới hạn hoặc ngưỡng thì được cảnh báo lại.
       const warnings: LimitRef[] = [];
       for (const limit of limits) {
-        const prev = before.get(key(limit.scope)) ?? { tokens: 0, cost: 0 };
-        const next = await this.ledgerTotals(tx, ctx, limit.scope, held.period);
-        const crossed = (lim: number | null, a: number, b: number) =>
-          lim !== null && lim > 0 && a < lim * limit.warnThreshold && b >= lim * limit.warnThreshold;
-        if (crossed(limit.tokenLimit, prev.tokens, next.tokens) && limit.tokenLimit !== null) {
+        const used = await this.ledgerTotals(tx, ctx, limit.scope, held.period);
+        const candidates: Array<{ kind: 'tokens' | 'cost'; limit: number | null; used: number }> = [
+          { kind: 'tokens', limit: limit.tokenLimit, used: used.tokens },
+          { kind: 'cost', limit: limit.costLimit, used: used.cost },
+        ];
+        for (const c of candidates) {
+          if (c.limit === null || c.limit <= 0) continue;
+          if (!reachedThreshold(c.used, c.limit, limit.warnThreshold)) continue;
+          const first = await tx
+            .insert(budgetWarningLog)
+            .values({
+              companyId: ctx.companyId,
+              scopeKind: limit.scope.kind,
+              scopeId: limit.scope.id,
+              period: held.period,
+              metric: c.kind,
+              limitValue: String(c.limit),
+              threshold: String(limit.warnThreshold),
+            })
+            .onConflictDoNothing()
+            .returning({ id: budgetWarningLog.id });
+          if (first.length === 0) continue;
           warnings.push({
             scopeKind: limit.scope.kind,
             scopeId: limit.scope.id,
-            kind: 'tokens',
-            limit: limit.tokenLimit,
-            used: next.tokens,
-          });
-        }
-        if (crossed(limit.costLimit, prev.cost, next.cost) && limit.costLimit !== null) {
-          warnings.push({
-            scopeKind: limit.scope.kind,
-            scopeId: limit.scope.id,
-            kind: 'cost',
-            limit: limit.costLimit,
-            used: next.cost,
+            kind: c.kind,
+            limit: c.limit,
+            used: c.used,
           });
         }
       }
@@ -341,21 +353,147 @@ export class UsageBudgetService implements BudgetService {
   /** Model phải thuộc `allowed_models` của mọi scope có khai báo (US6-AS5). Scope không khai báo thì không hạn chế. */
   async isModelAllowed(ctx: RequestContext, employeeId: string, modelId: string): Promise<boolean> {
     const employee = await this.employees.get(ctx, employeeId);
-    const scopes = await this.scopesOf(ctx, employee);
+    const allowed = await this.allowedModelsOf(ctx, await this.scopesOf(ctx, employee));
+    return allowed === null || allowed.includes(modelId);
+  }
+
+  async allowedModelsFor(
+    ctx: RequestContext,
+    target: { homeOrgUnitId: string; teamIds?: string[]; employeeId?: string },
+  ): Promise<string[] | null> {
+    const chain = await this.organization.resolveOrgUnitChain(ctx, target.homeOrgUnitId);
+    const scopes: ScopeRef[] = [
+      { kind: 'company', id: ctx.companyId },
+      ...chain.map((id) => ({ kind: 'org_unit' as const, id })),
+      ...(target.teamIds ?? []).map((id) => ({ kind: 'team' as const, id })),
+      ...(target.employeeId ? [{ kind: 'ai_employee' as const, id: target.employeeId }] : []),
+    ];
+    return this.allowedModelsOf(ctx, scopes);
+  }
+
+  async getConcurrencyLimits(ctx: RequestContext, employeeId: string): Promise<ConcurrencyLimit[]> {
+    const employee = await this.employees.get(ctx, employeeId);
+    const applicable = new Set((await this.scopesOf(ctx, employee)).map(key));
     const rows = await inTenant(ctx, (tx) =>
-      tx
-        .select({
-          kind: budgetPolicy.scopeKind,
-          id: budgetPolicy.scopeId,
-          allowed: budgetPolicy.allowedModels,
-        })
-        .from(budgetPolicy)
-        .where(eq(budgetPolicy.companyId, ctx.companyId)),
+      tx.select().from(budgetPolicy).where(eq(budgetPolicy.companyId, ctx.companyId)),
     );
-    const applicable = new Set(scopes.map(key));
-    return rows
-      .filter((r) => applicable.has(`${r.kind}:${r.id}`) && r.allowed !== null)
-      .every((r) => (r.allowed as string[]).includes(modelId));
+    return rows.flatMap((r) =>
+      r.maxConcurrentTasks !== null &&
+      r.scopeKind !== 'ai_employee' &&
+      applicable.has(`${r.scopeKind}:${r.scopeId}`)
+        ? [{ scopeKind: r.scopeKind, scopeId: r.scopeId, max: r.maxConcurrentTasks }]
+        : [],
+    );
+  }
+
+  // --- chính sách theo phạm vi (T168, T171) ---
+
+  /** Chính sách của một phạm vi; chưa có bản ghi thì trả mặc định (`isDefault`). */
+  async getPolicy(
+    ctx: RequestContext,
+    scopeKind: BudgetScopeKind,
+    scopeId: string,
+  ): Promise<BudgetPolicy> {
+    await this.assertScopeExists(ctx, scopeKind, scopeId);
+    const [row] = await inTenant(ctx, (tx) =>
+      tx
+        .select()
+        .from(budgetPolicy)
+        .where(
+          and(
+            eq(budgetPolicy.companyId, ctx.companyId),
+            eq(budgetPolicy.scopeKind, scopeKind),
+            eq(budgetPolicy.scopeId, scopeId),
+          ),
+        ),
+    );
+    if (!row) {
+      const company = scopeKind === 'company';
+      return {
+        scopeKind,
+        scopeId,
+        monthlyTokenLimit: company ? this.config.DEFAULT_MONTHLY_TOKEN_LIMIT : null,
+        monthlyCostLimit: company ? this.config.DEFAULT_MONTHLY_COST_LIMIT_USD : null,
+        maxConcurrentTasks: null,
+        allowedModels: null,
+        warnThreshold: this.config.BUDGET_WARN_THRESHOLD,
+        isDefault: true,
+      };
+    }
+    return toPolicy(row);
+  }
+
+  /**
+   * Thay chính sách của một phạm vi (PUT). Phạm vi `ai_employee` không nhận `maxConcurrentTasks`. Công ty luôn có
+   * giới hạn token và chi phí (Nguyên tắc V): bỏ trống thì giữ giá trị hiện có hoặc mặc định, đặt `null` bị từ chối.
+   * Ngưỡng cảnh báo bỏ trống thì giữ giá trị hiện có.
+   */
+  async upsertPolicy(
+    ctx: RequestContext,
+    scopeKind: BudgetScopeKind,
+    scopeId: string,
+    body: PutBudgetPolicyBody,
+  ): Promise<BudgetPolicy> {
+    if (scopeKind === 'ai_employee' && body.maxConcurrentTasks !== undefined) {
+      throw new DomainError(
+        'VALIDATION_FAILED',
+        'Giới hạn đồng thời của nhân viên đặt qua PATCH /employees/{id}',
+        { field: 'maxConcurrentTasks' },
+      );
+    }
+    const current = await this.getPolicy(ctx, scopeKind, scopeId);
+    const company = scopeKind === 'company';
+    if (company) {
+      for (const field of ['monthlyTokenLimit', 'monthlyCostLimit'] as const) {
+        if (body[field] === null) {
+          throw new DomainError('VALIDATION_FAILED', 'Công ty luôn phải có giới hạn token và chi phí', {
+            field,
+          });
+        }
+      }
+    }
+    for (const modelId of body.allowedModels ?? []) {
+      if (!(await this.models.hasModel(modelId))) {
+        throw new DomainError('VALIDATION_FAILED', 'Model không có trong danh mục cấu hình', {
+          field: 'allowedModels',
+          modelId,
+        });
+      }
+    }
+
+    const tokenLimit = company
+      ? (body.monthlyTokenLimit ?? current.monthlyTokenLimit)
+      : (body.monthlyTokenLimit ?? null);
+    const costLimit = company
+      ? (body.monthlyCostLimit ?? current.monthlyCostLimit)
+      : (body.monthlyCostLimit ?? null);
+    const stored = {
+      monthlyTokenLimit: tokenLimit,
+      monthlyCostLimit: costLimit === null ? null : String(costLimit),
+      maxConcurrentTasks: scopeKind === 'ai_employee' ? null : (body.maxConcurrentTasks ?? null),
+      allowedModels: body.allowedModels ?? null,
+      warnThreshold: String(body.warnThreshold ?? current.warnThreshold),
+    };
+    const [row] = await inTenant(ctx, async (tx) => {
+      const [saved] = await tx
+        .insert(budgetPolicy)
+        .values({ id: newId(), companyId: ctx.companyId, scopeKind, scopeId, ...stored })
+        .onConflictDoUpdate({
+          target: [budgetPolicy.companyId, budgetPolicy.scopeKind, budgetPolicy.scopeId],
+          set: stored,
+        })
+        .returning();
+      // Điều phối lập lịch lại task đang chờ slot khi giới hạn đồng thời được nới (T170, T174).
+      await this.events.publish(tx, ctx, {
+        type: 'budget.policy_changed',
+        aggregateKind: 'budget_policy',
+        aggregateId: scopeId,
+        payload: { scopeKind, scopeId },
+      });
+      return [saved];
+    });
+    if (!row) throw new Error('Không lưu được chính sách ngân sách');
+    return toPolicy(row);
   }
 
   async getUsage(
@@ -363,14 +501,18 @@ export class UsageBudgetService implements BudgetService {
     filter: {
       employeeId?: string;
       taskId?: string;
+      runId?: string;
       orgUnitId?: string;
       period?: string;
       groupBy?: 'employee' | 'task' | 'org_unit';
+      scope?: ManagedScope;
     },
   ): Promise<UsageSummary> {
     const company = await this.organization.getCompany(ctx);
-    // Theo task thì cộng dồn mọi kỳ (trần `token_cap`/`cost_cap` áp cho cả vòng đời task).
-    const period = filter.period ?? (filter.taskId ? 'all' : periodOf(new Date(), company.timezone));
+    // Theo task hoặc run thì cộng dồn mọi kỳ (trần `token_cap`/`cost_cap` áp cho cả vòng đời task).
+    const period =
+      filter.period ??
+      (filter.taskId || filter.runId ? 'all' : periodOf(new Date(), company.timezone));
     let orgUnitIds: string[] | undefined;
     if (filter.orgUnitId) {
       const chart = await this.organization.getOrgChart(ctx);
@@ -381,9 +523,23 @@ export class UsageBudgetService implements BudgetService {
     if (period !== 'all') conditions.push(eq(usageLedger.period, period));
     if (filter.employeeId) conditions.push(eq(usageLedger.aiEmployeeId, filter.employeeId));
     if (filter.taskId) conditions.push(eq(usageLedger.taskId, filter.taskId));
+    if (filter.runId) conditions.push(eq(usageLedger.agentRunId, filter.runId));
     if (orgUnitIds) {
       if (orgUnitIds.length === 0) return { period, tokens: 0, costUsd: 0, groups: [] };
       conditions.push(inArray(usageLedger.orgUnitId, orgUnitIds));
+    }
+    // Manager chỉ thấy chi tiêu của nhân viên trong phạm vi, kể cả nhân viên đã lưu trữ thuộc đơn vị mình quản lý
+    // (ledger lưu đơn vị nhà tại thời điểm ghi).
+    if (filter.scope && !filter.scope.companyWide) {
+      const parts: SQL[] = [];
+      if (filter.scope.employeeIds.length > 0) {
+        parts.push(inArray(usageLedger.aiEmployeeId, filter.scope.employeeIds));
+      }
+      if (filter.scope.orgUnitIds.length > 0) {
+        parts.push(inArray(usageLedger.orgUnitId, filter.scope.orgUnitIds));
+      }
+      if (parts.length === 0) return { period, tokens: 0, costUsd: 0, groups: [] };
+      conditions.push(or(...parts) as SQL);
     }
 
     const tokensExpr = sql<string>`coalesce(sum(${usageLedger.inputTokens} + ${usageLedger.outputTokens} + ${usageLedger.cacheReadTokens} + ${usageLedger.cacheWriteTokens}), 0)`;
@@ -422,6 +578,56 @@ export class UsageBudgetService implements BudgetService {
   }
 
   // --- nội bộ ---
+
+  /** Giao các `allowed_models` đã khai báo ở các scope; `null` nếu không scope nào khai báo. */
+  private async allowedModelsOf(
+    ctx: RequestContext,
+    scopes: readonly ScopeRef[],
+  ): Promise<string[] | null> {
+    const rows = await inTenant(ctx, (tx) =>
+      tx
+        .select({
+          kind: budgetPolicy.scopeKind,
+          id: budgetPolicy.scopeId,
+          allowed: budgetPolicy.allowedModels,
+        })
+        .from(budgetPolicy)
+        .where(eq(budgetPolicy.companyId, ctx.companyId)),
+    );
+    const applicable = new Set(scopes.map(key));
+    const lists = rows
+      .filter((r) => applicable.has(`${r.kind}:${r.id}`) && r.allowed !== null)
+      .map((r) => r.allowed as string[]);
+    if (lists.length === 0) return null;
+    return lists.reduce((acc, list) => acc.filter((m) => list.includes(m)));
+  }
+
+  /** Phạm vi phải tồn tại và còn hoạt động trong công ty của người gọi. */
+  private async assertScopeExists(
+    ctx: RequestContext,
+    scopeKind: BudgetScopeKind,
+    scopeId: string,
+  ): Promise<void> {
+    const missing = () => new DomainError('NOT_FOUND', 'Không tìm thấy phạm vi');
+    switch (scopeKind) {
+      case 'company':
+        if (scopeId !== ctx.companyId) throw missing();
+        return;
+      case 'org_unit':
+        if (!(await this.organization.getOrgUnit(ctx, scopeId))) throw missing();
+        return;
+      case 'team': {
+        const chart = await this.organization.getOrgChart(ctx);
+        if (!chartHasTeam(chart.roots, scopeId)) throw missing();
+        return;
+      }
+      case 'ai_employee': {
+        const employee = await this.employees.get(ctx, scopeId).catch(() => null);
+        if (!employee || employee.status === 'archived') throw missing();
+        return;
+      }
+    }
+  }
 
   /** Scope áp dụng cho nhân viên: company, đơn vị nhà và tổ tiên, các team, chính nhân viên. */
   private async scopesOf(ctx: RequestContext, employee: EmployeeProfile): Promise<ScopeRef[]> {
@@ -557,4 +763,22 @@ export class UsageBudgetService implements BudgetService {
 
 function key(scope: ScopeRef): string {
   return `${scope.kind}:${scope.id}`;
+}
+
+function toPolicy(row: typeof budgetPolicy.$inferSelect): BudgetPolicy {
+  return {
+    scopeKind: row.scopeKind,
+    scopeId: row.scopeId,
+    monthlyTokenLimit: row.monthlyTokenLimit ?? null,
+    monthlyCostLimit: row.monthlyCostLimit === null ? null : Number(row.monthlyCostLimit),
+    maxConcurrentTasks: row.maxConcurrentTasks ?? null,
+    allowedModels: row.allowedModels ?? null,
+    warnThreshold: Number(row.warnThreshold),
+    isDefault: false,
+  };
+}
+
+/** Đã dùng ≥ `limit × threshold` (dung sai số học cho chi phí thập phân). */
+function reachedThreshold(used: number, limit: number, threshold: number): boolean {
+  return used >= limit * threshold - EPSILON;
 }

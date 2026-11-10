@@ -116,3 +116,32 @@ export const budgetReservation = pgTable(
   },
   (t) => [index('budget_reservation_held_idx').on(t.companyId, t.period, t.status)],
 );
+
+/**
+ * Nhật ký cảnh báo ngưỡng: mỗi (phạm vi, kỳ, loại giới hạn, giá trị giới hạn, ngưỡng) chỉ cảnh báo một lần.
+ * Đổi giới hạn hoặc ngưỡng là một "ngưỡng" khác nên được cảnh báo lại; bản ghi cũ giữ nguyên.
+ */
+export const budgetWarningLog = pgTable(
+  'budget_warning_log',
+  {
+    ...baseColumns(),
+    scopeKind: policyScopeKindEnum('scope_kind').notNull(),
+    scopeId: uuid('scope_id').notNull(),
+    period: text('period').notNull(),
+    metric: text('metric').notNull(),
+    limitValue: numeric('limit_value', { precision: 18, scale: 6 }).notNull(),
+    threshold: numeric('threshold', { precision: 4, scale: 3 }).notNull(),
+  },
+  (t) => [
+    unique('budget_warning_log_unique').on(
+      t.companyId,
+      t.scopeKind,
+      t.scopeId,
+      t.period,
+      t.metric,
+      t.limitValue,
+      t.threshold,
+    ),
+    check('budget_warning_log_metric', sql`${t.metric} in ('tokens', 'cost')`),
+  ],
+);

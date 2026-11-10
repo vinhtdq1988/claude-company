@@ -88,6 +88,28 @@ export type AgentRunDetail = AgentRunSummary & {
   toolInvocations: ToolInvocation[];
 };
 
+/** Chi phí thực tế của một run, cộng từ `usage_ledger` (US7-AS1). */
+export type RunUsage = { tokens: number; costUsd: number };
+
+/** Chi tiết run trả cho người xem: kèm usage do BudgetService cung cấp (OrchestrationEngine không đọc ledger). */
+export type AgentRunView = AgentRunDetail & { usage: RunUsage };
+
+/** Query của `GET /runs`: lọc theo task hoặc nhân viên; luôn bị giới hạn theo phạm vi quản lý của người xem. */
+export const runListQuerySchema = z.object({
+  taskId: z.string().uuid().optional(),
+  employeeId: z.string().uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
+export type RunListQuery = z.infer<typeof runListQuerySchema>;
+
+export type RunListFilter = {
+  taskId?: string;
+  employeeId?: string;
+  /** Chỉ run của nhân viên trong tập này (phạm vi quản lý). Không đặt = không lọc. Mảng rỗng = không có gì. */
+  employeeIds?: string[];
+  limit?: number;
+};
+
 export type AgentRunStatusPatch = {
   status?: RunStatus;
   errorCode?: string;

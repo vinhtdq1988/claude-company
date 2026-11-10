@@ -56,7 +56,7 @@ describe('Contract: ModelCatalog (T069a)', () => {
   it('dùng dòng giá hiệu lực mới nhất; dòng có hiệu lực trong tương lai chưa áp dụng', async () => {
     await owner.query(
       `insert into model_price(id, model_id, input_per_mtok, output_per_mtok, cache_read_per_mtok, cache_write_per_mtok, effective_from)
-       values (gen_random_uuid(), 'claude-opus-5-5', 9, 45, 0.9, 11, now() - interval '1 day'),
+       values (gen_random_uuid(), 'claude-opus-5-5', 9, 45, 0.9, 11, now() - interval '1 minute'),
               (gen_random_uuid(), 'claude-opus-5-5', 99, 99, 9, 9, now() + interval '30 days')`,
     );
     const opus = (await catalog.listModels()).find((m) => m.modelId === 'claude-opus-5-5');

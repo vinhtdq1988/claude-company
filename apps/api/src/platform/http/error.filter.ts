@@ -9,6 +9,7 @@ const STATUS_TO_CODE: Record<number, ErrorCode> = {
   404: 'NOT_FOUND',
   409: 'CONFLICT',
   422: 'VALIDATION_FAILED',
+  429: 'RATE_LIMITED',
 };
 
 function body(code: ErrorCode, message: string, details: Record<string, unknown> = {}): ErrorBody {

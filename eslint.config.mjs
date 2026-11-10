@@ -132,6 +132,21 @@ export default defineConfig([
     rules: restrict([ANTHROPIC, PIXI]),
   },
 
+  // Service Docker viết bằng Node thuần (.mjs), không qua TypeScript: khai báo global của Node.
+  {
+    files: ['docker/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        fetch: 'readonly',
+      },
+    },
+  },
+
   // NestJS DI đọc kiểu tham số constructor qua emitDecoratorMetadata nên import class phải là import giá trị;
   // `import type` (kể cả do autofix) làm mất metadata và DI không inject được.
   {

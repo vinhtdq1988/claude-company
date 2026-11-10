@@ -29,7 +29,7 @@ Server lọc theo `ManagedScope` của từng socket trước khi phát (FR-005,
 | type | payload |
 |---|---|
 | `office.employee_status_changed` | `{ employeeId, state, previousState, currentTaskId?, currentTool?, progress?, sourceEventType }` |
-| `office.layout_changed` | `{ reason: "org_unit_created"|"org_unit_archived"|"employee_moved" }` → client tải lại snapshot |
+| `office.layout_changed` | `{ reason: "org_unit_created"|"org_unit_updated"|"org_unit_archived"|"employee_added"|"employee_updated"|"employee_moved"|"employee_removed" }` → client tải lại snapshot (T155 mở rộng danh sách lý do để hồ sơ và vị trí nhân viên mới cũng cập nhật được) |
 | `task.status_changed` | `{ taskId, from, to, assigneeKind, assigneeId, isOverdue }` |
 | `task.progress` | `{ taskId, employeeId, progress }` |
 | `run.step_appended` | `{ runId, taskId, employeeId, seq, kind }` |
@@ -45,20 +45,22 @@ Server lọc theo `ManagedScope` của từng socket trước khi phát (FR-005,
 | `approval.requested` | `{ approvalRequestId, taskId, employeeId, actionType }` |
 | `approval.decided` | `{ approvalRequestId, decision }` |
 
+`approval.requested` và `approval.decided` chỉ tới `user:{approverMemberId}`. `approval.cancelled` (task rời `in_progress` hoặc bị hủy) và `approval.reassigned` (người duyệt bị vô hiệu) là `domain_event` không có envelope riêng: chúng chỉ giữ `seq` qua `sync.seq_advanced`, client làm mới hộp phê duyệt khi nhận `task.status_changed`. Tương tự, `budget.policy_changed` `{ scopeKind, scopeId }` (lưu chính sách ngân sách, T168) không có envelope riêng, chỉ giữ `seq` qua `sync.seq_advanced`; `TaskFlowListener` dùng nó để lập lịch lại task đang chờ slot.
+
 ## Ánh xạ domain event → trạng thái nhân viên (Office Simulation Engine)
 
-Reducer thuần, có unit test cho từng dòng (SC-006). Nhân viên có nhiều task: trạng thái theo run đang hoạt động gần nhất; ưu tiên `error_blocked` > `waiting_approval` > `working`/`thinking`.
+Reducer thuần, có unit test cho từng dòng (SC-006). Nhân viên có nhiều task: mỗi task một track; trạng thái hiển thị theo hạng `error_blocked` > `waiting_approval` > `working`/`thinking`/`communicating` > `completed`, cùng hạng thì lấy sự kiện gần nhất. `employee.suspended` thắng mọi track (`break`). `progress` đổi (từ `task.progress`) cũng phát `office.employee_status_changed` (cùng `state`).
 
 | Domain event | Trạng thái mới |
 |---|---|
 | `run.started` (purpose execute) | `working` |
 | `run.model_call_started` | `thinking` |
 | `run.tool_call_started` | `working` (ghi `currentTool`) |
-| `run.started` (purpose decompose/review/synthesize) hoặc AI Manager gửi `task_message` | `communicating` |
+| `run.started` (purpose decompose/review/synthesize) hoặc AI gửi `task_message` trong run đang chạy của mình (payload `task.message_posted` có `runId`) | `communicating` (tin nhắn ngoài run thì không đổi: không có sự kiện nào kết thúc trạng thái đó) |
 | `approval.requested` | `waiting_approval` |
-| `approval.decided` → run resume | `working` |
-| `run.succeeded` + task sang `in_review`/`completed` | `completed` (giữ 60 giây rồi `idle` qua sự kiện `office.completed_display_elapsed` do server phát có ghi `domain_event`) |
-| `run.failed` / `run.timed_out` / `task.blocked` | `error_blocked` |
+| `approval.decided` (chưa đổi); `run.resumed` sau đó | `working` |
+| `run.succeeded` (purpose execute; task sau đó sang `in_review`) | `completed` (giữ 60 giây rồi `idle` qua sự kiện `office.completed_display_elapsed` `{employeeId, taskId, sinceSeq}` do job `office.completed-elapsed` ghi `domain_event`; chỉ xóa đúng lần `sinceSeq`). `run.succeeded` của decompose/review/synthesize không để lại trạng thái |
+| `run.failed` / `run.timed_out` / `task.status_changed` sang `blocked` (assignee là AI Employee) | `error_blocked` cho tới khi task rời `blocked` (hoặc bị hủy/hoàn tất) hoặc run mới bắt đầu trên task đó. `run.cancelled` không xóa dấu hiệu lỗi |
 | `employee.suspended` | `break` |
-| `employee.resumed`, không còn run hoạt động | `idle` |
+| `employee.resumed`, không còn run hoạt động | `idle` (lỗi `EMPLOYEE_SUSPENDED` do chính việc tạm ngưng được xóa; lỗi khác vẫn giữ) |
 | (Phase 4) `meeting.*` | `meeting` – chưa phát trong v1.0 |

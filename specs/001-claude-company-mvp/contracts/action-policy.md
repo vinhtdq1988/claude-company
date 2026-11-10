@@ -24,7 +24,7 @@ Nguồn: `packages/policy/src/catalog.ts`. Mọi tool cấp cho AI Employee ph�
 
 ## Tool cho agent
 
-`buildToolSpecs(toolGrants, runtimeKind)` sinh `ToolSpec` cho mọi `ActionType` trong `tool_grants` có cột Runtime khớp với `runtimeKind`; `network.fetch` không bao giờ được sinh. Input schema nằm trong `packages/contracts/src/tool-inputs.ts`, kể cả các action Human Approval: `email.send` `{to[], subject, body}`, `data.delete` `{target, reason}`, `deploy.staging`, `deploy.production` `{ref, notes?}`, `workspace.git.push` `{remote, branch}`. Lệnh `git push` đi qua `workspace.shell` được chuẩn hóa về input của `workspace.git.push` trước khi tạo approval; không chuẩn hóa được → `restricted`.
+`buildToolSpecs(toolGrants, runtimeKind)` sinh `ToolSpec` cho mọi `ActionType` trong `tool_grants` có cột Runtime khớp với `runtimeKind`; `network.fetch` không bao giờ được sinh. Input schema nằm trong `packages/contracts/src/tool-inputs.ts`, kể cả các action Human Approval: `email.send` `{to[], subject, body}`, `data.delete` `{target, reason}`, `deploy.staging`, `deploy.production` `{ref, notes?}`, `workspace.git.push` `{remote, branch}`. Cả năm schema nhận thêm `rationale?` (lý do agent đề xuất, tối đa 2.000 ký tự): ToolBroker tách trường này ra TRƯỚC khi đánh giá quyền, băm và ghi ledger, nên đổi lý do không đổi hành động được duyệt; lý do chỉ hiển thị cho người duyệt như dữ liệu thuần. Lệnh `git push` đi qua `workspace.shell` được chuẩn hóa về input của `workspace.git.push` trước khi tạo approval; không chuẩn hóa được → `restricted`.
 
 ## Chống lặp sau resume hoặc retry
 

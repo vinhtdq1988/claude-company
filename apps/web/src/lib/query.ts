@@ -28,6 +28,26 @@ export const queryKeys = {
   workspaces: (companyId: string) => ['company', companyId, 'workspaces'] as const,
   roleTemplates: ['role-templates'] as const,
   models: ['models'] as const,
+  tasks: (companyId: string) => ['company', companyId, 'tasks'] as const,
+  task: (companyId: string, id: string) => ['company', companyId, 'tasks', id] as const,
+  taskMessages: (companyId: string, id: string) =>
+    ['company', companyId, 'tasks', id, 'messages'] as const,
+  taskActions: (companyId: string, id: string) =>
+    ['company', companyId, 'tasks', id, 'executed-actions'] as const,
+  notifications: (companyId: string) => ['company', companyId, 'notifications'] as const,
+  approvals: (companyId: string) => ['company', companyId, 'approvals'] as const,
+  officeSnapshot: (companyId: string) => ['company', companyId, 'office', 'snapshot'] as const,
+  budgetPolicies: (companyId: string) => ['company', companyId, 'budget-policies'] as const,
+  budgetPolicy: (companyId: string, kind: string, id: string) =>
+    ['company', companyId, 'budget-policies', kind, id] as const,
+  usage: (companyId: string) => ['company', companyId, 'usage'] as const,
+  runs: (companyId: string) => ['company', companyId, 'runs'] as const,
+  run: (companyId: string, id: string) => ['company', companyId, 'runs', id] as const,
+  milestones: (companyId: string) => ['company', companyId, 'milestones'] as const,
+  dashboard: (companyId: string, orgUnitId: string | null) =>
+    ['company', companyId, 'dashboard', orgUnitId] as const,
+  profileView: (companyId: string, employeeId: string) =>
+    ['company', companyId, 'employees', employeeId, 'profile-view'] as const,
 };
 
 /** Tải phiên hiện tại và lưu CSRF token cho các request ghi. Trả null nếu chưa đăng nhập. */

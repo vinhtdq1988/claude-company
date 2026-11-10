@@ -3,7 +3,9 @@ import {
   CONFIG,
   CommunicationModule,
   EmployeeModule,
+  GamificationModule,
   MemoryModule,
+  OfficeSimulationModule,
   OrchestrationModule,
   OrganizationModule,
   PermissionModule,
@@ -13,6 +15,7 @@ import {
 } from '@claude-company/api';
 import { createModelGateway, type ModelGateway } from '@claude-company/model-gateway';
 import { MODEL_GATEWAY, SANDBOX_CLIENT } from './runtime/tokens';
+import { AdaptersModule } from './tools/adapters/adapters.module';
 import { HttpSandboxClient, UnconfiguredSandboxClient, type SandboxClient } from './tools/sandbox-client';
 import { WorkerRuntime } from './worker-runtime';
 
@@ -30,23 +33,30 @@ import { WorkerRuntime } from './worker-runtime';
     CommunicationModule,
     MemoryModule,
     OrchestrationModule,
+    OfficeSimulationModule,
+    GamificationModule,
+    AdaptersModule,
   ],
   providers: [
     {
       provide: MODEL_GATEWAY,
       inject: [CONFIG],
       // `MODEL_PROVIDER=fake`: FakeModelProvider tất định, không tốn token (Playwright, test).
-      useFactory: (config: AppConfig): ModelGateway =>
-        config.MODEL_PROVIDER === 'fake'
-          ? createModelGateway({ provider: 'fake' })
+      useFactory: (config: AppConfig): ModelGateway => {
+        if (config.MODEL_PROVIDER === 'fake') return createModelGateway({ provider: 'fake' });
+        const agentSdk = {
+          httpsProxy: config.EGRESS_PROXY_URL,
+          noProxy: 'localhost,127.0.0.1,sandbox-runner,postgres,redis,minio,api',
+        };
+        // `claude_subscription` (chỉ local): đăng nhập subscription của Claude Code CLI, không có API key.
+        return config.MODEL_PROVIDER === 'claude_subscription'
+          ? createModelGateway({ provider: 'claude_subscription', agentSdk })
           : createModelGateway({
               provider: 'anthropic',
               apiKey: config.ANTHROPIC_API_KEY ?? '',
-              agentSdk: {
-                httpsProxy: config.EGRESS_PROXY_URL,
-                noProxy: 'localhost,127.0.0.1,sandbox-runner,postgres,redis,minio,api',
-              },
-            }),
+              agentSdk,
+            });
+      },
     },
     {
       provide: SANDBOX_CLIENT,

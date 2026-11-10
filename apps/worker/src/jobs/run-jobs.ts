@@ -1,6 +1,8 @@
 import type { Job } from 'bullmq';
 import type { JobName, JobPayload } from '@claude-company/api';
 import { RunBusyError, type RunExecutor, type RunJobPayload } from '../runtime/run-loop';
+import type { ApprovalJobPayload } from './approval-jobs';
+import type { CompletedElapsedPayload } from './office-jobs';
 
 /** Job chạy một `agent_run`; khác nhau ở `purpose` đã nằm trong payload. */
 export const RUN_JOB_NAMES: readonly JobName[] = [
@@ -22,11 +24,17 @@ export type JobEnqueuer = (
 
 /**
  * Bộ xử lý job BullMQ (T114). Mỗi job `run.start`, `task.decompose`, `task.synthesize`, `review.run` chạy một
- * `agent_run` với `input` dựng theo mục "Ngữ cảnh đầu vào theo purpose". `action.execute-approved` thuộc US4.
+ * `agent_run` với `input` dựng theo mục "Ngữ cảnh đầu vào theo purpose". `run.resume` (kèm `approvalRequestId`) tiếp tục
+ * run đang chờ duyệt; `action.execute-approved` thực thi payload đã duyệt rồi đánh thức run (US4).
  */
 export async function processJob(
   job: Pick<Job, 'id' | 'name' | 'data'>,
-  deps: { executor: Pick<RunExecutor, 'execute'>; enqueue: JobEnqueuer },
+  deps: {
+    executor: Pick<RunExecutor, 'execute'>;
+    enqueue: JobEnqueuer;
+    executeApproved?: (payload: ApprovalJobPayload) => Promise<unknown>;
+    completedElapsed?: (payload: CompletedElapsedPayload) => Promise<unknown>;
+  },
 ): Promise<void> {
   const name = job.name as JobName;
   if (RUN_JOB_NAMES.includes(name)) {
@@ -43,7 +51,16 @@ export async function processJob(
     return;
   }
   if (name === 'action.execute-approved') {
-    throw new Error('Thực thi hành động đã duyệt thuộc US4 (Human Approval), chưa được triển khai');
+    if (!deps.executeApproved)
+      throw new Error('Worker chưa được nối với trình thực thi hành động đã duyệt');
+    await deps.executeApproved(job.data as ApprovalJobPayload);
+    return;
+  }
+  if (name === 'office.completed-elapsed') {
+    if (!deps.completedElapsed)
+      throw new Error('Worker chưa được nối với Office Simulation Engine');
+    await deps.completedElapsed(job.data as CompletedElapsedPayload);
+    return;
   }
   throw new Error(`Job không được hỗ trợ: ${job.name}`);
 }

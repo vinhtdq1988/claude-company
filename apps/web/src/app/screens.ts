@@ -19,14 +19,14 @@ export const COMPANY_SCREENS: readonly Screen[] = [
   { path: 'workspaces', labelKey: 'nav.workspaces', module: 'features/employees/WorkspacesPage' },
   { path: 'tasks', labelKey: 'nav.tasks', module: 'features/tasks/TaskCenterPage' },
   { path: 'approvals', labelKey: 'nav.approvals', module: 'features/approvals/ApprovalsPage' },
-  { path: 'office', labelKey: 'nav.office', module: 'office/OfficePage' },
+  { path: 'office', labelKey: 'nav.office', module: 'office/VirtualOfficePage' },
   { path: 'dashboard', labelKey: 'nav.dashboard', module: 'features/dashboard/DashboardPage' },
-  { path: 'budget', labelKey: 'nav.budget', module: 'features/budget/BudgetPage' },
+  { path: 'budget', labelKey: 'nav.budget', module: 'features/budget/BudgetSettingsPage' },
   { path: 'history', labelKey: 'nav.history', module: 'features/history/HistoryPage' },
   {
     path: 'achievements',
     labelKey: 'nav.achievements',
-    module: 'features/milestones/AchievementPage',
+    module: 'features/milestones/MilestonesPage',
   },
 ];
 

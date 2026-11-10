@@ -20,6 +20,8 @@ export type RunState = {
   lockReason?: string;
   /** `review_required` đã được dùng: run phải qua review (luôn đúng vì mọi task đều qua In Review). */
   requiresReview: boolean;
+  /** Yêu cầu phê duyệt run đang chờ; có giá trị thì run sẽ tạm dừng (`waiting_approval`) khi agent kết thúc lượt. */
+  pendingApprovalId?: string;
 };
 
 export type RunContext = {
@@ -41,13 +43,13 @@ export type ToolHandler = (run: RunContext, input: unknown) => Promise<unknown>;
 
 /**
  * Cổng xử lý hành động `human_approval`. Agent không bao giờ tự thực thi: cổng chỉ tạo đề xuất.
- * US3 dùng cổng fail-closed (D6); US4 thay bằng cổng tạo `approval_request`.
+ * Cổng fail-closed (D6) chỉ còn dùng khi chưa nối Permission Engine; `ApprovalRequestGate` tạo `approval_request` thật.
  */
 export interface HumanApprovalGate {
   handle(
     run: RunContext,
     invocation: ToolInvocationRef,
-    detail: { actionType: string; input: unknown; summary: string },
+    detail: { actionType: string; input: unknown; summary: string; rationale?: string },
   ): Promise<ToolResult>;
 }
 

@@ -187,7 +187,7 @@ export class OrganizationService implements OrganizationEngine {
         name: unit.name,
         sortOrder: index,
       });
-      await this.publishUnitCreated(tx, ctx, row);
+      await this.publishUnitCreated(tx, ctx, row, { fromTemplate: true });
       for (const [teamIndex, teamName] of (unit.teams ?? []).entries()) {
         const teamRow = await this.repo.insertTeam(tx, {
           companyId: ctx.companyId,
@@ -760,12 +760,24 @@ export class OrganizationService implements OrganizationEngine {
     }
   }
 
-  private publishUnitCreated(tx: Tx, ctx: RequestContext, row: OrgUnitRow) {
+  /** `fromTemplate`: đơn vị do cơ cấu mẫu dựng lúc tạo công ty, không phải thao tác của người dùng (cột mốc First Department). */
+  private publishUnitCreated(
+    tx: Tx,
+    ctx: RequestContext,
+    row: OrgUnitRow,
+    options: { fromTemplate?: boolean } = {},
+  ) {
     return this.events.publish(tx, ctx, {
       type: 'org_unit.created',
       aggregateKind: 'org_unit',
       aggregateId: row.id,
-      payload: { orgUnitId: row.id, kind: row.kind, parentId: row.parentId, name: row.name },
+      payload: {
+        orgUnitId: row.id,
+        kind: row.kind,
+        parentId: row.parentId,
+        name: row.name,
+        ...(options.fromTemplate ? { fromTemplate: true } : {}),
+      },
     });
   }
 

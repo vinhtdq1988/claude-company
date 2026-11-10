@@ -70,6 +70,13 @@ export class TaskFlowListener implements OnModuleInit, OnModuleDestroy {
       this.bus.subscribe('task.', (e) => this.guard(e, () => this.onTaskEvent(e))),
       this.bus.subscribe('employee.', (e) => this.guard(e, () => this.onEmployeeEvent(e))),
       this.bus.subscribe('run.', (e) => this.guard(e, () => this.onRunEvent(e))),
+      this.bus.subscribe('approval.decided', (e) => this.guard(e, () => this.onApprovalDecided(e))),
+      // Giới hạn đồng thời có thể vừa được nới: task đang chờ slot được xét lại.
+      this.bus.subscribe('budget.policy_changed', (e) =>
+        this.guard(e, async () => {
+          await this.scheduler.scheduleAllWaiting(this.ctxOf(e));
+        }),
+      ),
     );
   }
 
@@ -132,7 +139,8 @@ export class TaskFlowListener implements OnModuleInit, OnModuleDestroy {
 
     // Rời `in_progress` giải phóng slot của nhân viên: lấy task kế tiếp đang chờ theo priority rồi deadline.
     if (p.from === 'in_progress' && p.assigneeKind === 'ai_employee') {
-      await this.scheduler.scheduleEmployee(ctx, p.assigneeId);
+      // Cũng đánh thức nhân viên cùng scope đang bị giới hạn `max_concurrent_tasks` của team/đơn vị/công ty giữ lại.
+      await this.scheduler.scheduleAfterRelease(ctx, p.assigneeId);
     }
   }
 
@@ -239,6 +247,15 @@ export class TaskFlowListener implements OnModuleInit, OnModuleDestroy {
     } else if (event.type === 'employee.resumed') {
       await this.scheduler.scheduleEmployee(ctx, employeeId);
     }
+  }
+
+  // --- phê duyệt ---
+
+  /** Quyết định của người thật: duyệt → job thực thi hành động đã duyệt; từ chối → agent nhận lý do (US4-AS5). */
+  async onApprovalDecided(event: DomainEvent): Promise<void> {
+    const approvalRequestId = (event.payload as { approvalRequestId?: string }).approvalRequestId;
+    if (!approvalRequestId) return;
+    await this.orchestration.resumeAfterApproval(this.ctxOf(event), approvalRequestId);
   }
 
   // --- run ---

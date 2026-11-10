@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import {
   DomainError,
   type CommunicationEngine,
@@ -7,10 +8,12 @@ import {
   type Page,
   type RequestContext,
   type RoutedNotification,
+  type TaskEngine,
   type TaskMessage,
 } from '@claude-company/contracts';
 import { notification, taskMessage } from '@claude-company/db/schema/communication';
 import { and, desc, eq, isNull, lt, or, type SQL } from 'drizzle-orm';
+import { TASK_ENGINE } from '../../platform/engine-tokens';
 import { EventPublisher } from '../../platform/events/event-publisher';
 import { inTenant } from '../../platform/tenancy/tenant-store';
 import { NotificationRouter } from './notification-routing';
@@ -49,7 +52,12 @@ export class CommunicationService implements CommunicationEngine {
   constructor(
     private readonly events: EventPublisher,
     private readonly router: NotificationRouter,
+    private readonly moduleRef: ModuleRef,
   ) {}
+
+  private get tasks(): TaskEngine {
+    return this.moduleRef.get<TaskEngine>(TASK_ENGINE, { strict: false });
+  }
 
   async postTaskMessage(ctx: RequestContext, taskId: string, body: string): Promise<TaskMessage> {
     const text = body.trim();
@@ -57,6 +65,8 @@ export class CommunicationService implements CommunicationEngine {
     if (ctx.actor.kind === 'system') {
       throw new DomainError('FORBIDDEN', 'Tin nhắn phải do người thật hoặc AI Employee gửi');
     }
+    // Không có chat tự do: tin nhắn chỉ gắn vào task có thật của công ty (không có FK xuyên engine).
+    await this.tasks.get(ctx, taskId);
     const author =
       ctx.actor.kind === 'human'
         ? ({ kind: 'human', id: ctx.actor.memberId, runId: null } as const)
@@ -84,6 +94,8 @@ export class CommunicationService implements CommunicationEngine {
           messageId: inserted.id,
           authorKind: author.kind,
           authorId: author.id,
+          // Office Simulation chỉ coi nhân viên là `communicating` khi tin nhắn gắn với run đang chạy của họ.
+          runId: author.runId,
         },
       });
       return inserted;

@@ -417,3 +417,349 @@ button.link {
 .prewrap {
   white-space: pre-wrap;
 }
+
+/* --- Task Center (T121–T123) --- */
+.badge-danger {
+  background: var(--error);
+}
+.priority-urgent {
+  background: var(--error);
+}
+.priority-high {
+  background: #c25b00;
+}
+.priority-medium {
+  background: var(--accent);
+}
+.priority-low {
+  background: var(--muted);
+}
+.filters .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.board {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(240px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+.board-col {
+  min-width: 0;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.board-col h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+}
+.board-list,
+.message-list,
+.criteria-list,
+.review-list,
+.artifact-list,
+.subtask-list,
+.trace-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.trace-list {
+  list-style: decimal inside;
+}
+.task-card {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.task-title {
+  justify-self: start;
+  text-align: left;
+  font-weight: 600;
+}
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.task-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  font-size: 0.82rem;
+}
+.task-facts dt {
+  color: var(--muted);
+}
+.task-facts dd {
+  margin: 0;
+}
+.task-card progress,
+.task-detail > progress {
+  width: 100%;
+  height: 8px;
+}
+.task-detail > section {
+  margin-top: 16px;
+}
+.criterion {
+  margin-bottom: 8px;
+}
+.criterion-met .badge {
+  background: #1e7a46;
+}
+.criterion-not_met .badge {
+  background: var(--error);
+}
+.criterion-none .badge {
+  background: var(--muted);
+}
+.artifact-content {
+  max-height: 320px;
+  margin: 8px 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.decision {
+  display: grid;
+  gap: 8px;
+  max-width: 640px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.decision label {
+  display: grid;
+  gap: 4px;
+}
+.message-form {
+  display: grid;
+  gap: 6px;
+  max-width: 640px;
+}
+
+/* --- Thông báo (T124) --- */
+.notifications {
+  position: relative;
+}
+.bell {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.notification-panel {
+  position: absolute;
+  right: 0;
+  z-index: 10;
+  width: min(360px, 90vw);
+  max-height: 70vh;
+  margin-top: 6px;
+  padding: 10px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
+}
+.notification-panel ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.notification {
+  display: grid;
+  gap: 2px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+.notification.unread {
+  font-weight: 600;
+}
+
+/* Virtual Office (US5) */
+.office-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.office-canvas {
+  position: relative;
+  min-height: 420px;
+  height: 60vh;
+  overflow: hidden;
+  background: #1d2330;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.office-canvas[data-stale='true'] {
+  outline: 2px dashed var(--error);
+}
+.office-canvas canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+.office-side {
+  display: grid;
+  gap: 12px;
+}
+.office-roster,
+.plain-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.office-roster li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.plain-list li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.link-button {
+  padding: 0;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  font: inherit;
+}
+.badge-warn {
+  color: var(--text);
+  background: var(--warn-bg);
+}
+.profile-panel progress {
+  display: block;
+  width: 100%;
+}
+@media (max-width: 800px) {
+  .office-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  padding: 0;
+  margin: 0 0 12px;
+  list-style: none;
+}
+.stat {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.stat strong {
+  font-size: 1.5rem;
+}
+.stat-label,
+.stat-sub,
+.hint {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, 2fr) minmax(200px, 2fr);
+  gap: 8px;
+  align-items: center;
+  padding: 4px 0;
+}
+.usage-row progress {
+  width: 100%;
+}
+.usage-warn .badge,
+.usage-over .badge {
+  background: var(--warn-bg);
+}
+.usage-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+.usage-table th,
+.usage-table td {
+  padding: 4px 8px;
+  text-align: left;
+  border-top: 1px solid var(--border);
+}
+@media (max-width: 600px) {
+  .usage-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --- Lịch sử thực thi (T184, T185) --- */
+.run-failure {
+  border: 1px solid var(--error);
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+.run-failure p {
+  margin: 4px 0;
+}
+.run-steps {
+  display: grid;
+  gap: 8px;
+  padding-left: 20px;
+}
+.run-steps details {
+  margin-top: 4px;
+}
+
+/* --- Achievement (T191) --- */
+.achievements {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  padding: 0;
+  list-style: none;
+}
+.achievement {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.achievement h3 {
+  margin: 0 0 4px;
+}
+.achievement.achieved {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.achievement.locked {
+  opacity: 0.75;
+}
+.milestone-toast {
+  border: 1px solid var(--accent);
+}

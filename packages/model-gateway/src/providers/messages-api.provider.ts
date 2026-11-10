@@ -45,8 +45,10 @@ export class MessagesApiProvider implements ModelGateway {
   }
 
   async *runAgent(req: AgentRunRequest, io: AgentRunIO): AsyncGenerator<AgentRunEvent> {
+    // Resume sau phê duyệt: hội thoại đã lưu kết thúc bằng kết quả tool `pending_approval`/`run_locked`; kết quả duyệt
+    // (`req.input`) được thêm thành một lượt user mới (engine-interfaces.md).
     const messages: Message[] = Array.isArray(req.resumeConversation)
-      ? [...(req.resumeConversation as Message[])]
+      ? [...(req.resumeConversation as Message[]), { role: 'user', content: req.input }]
       : [{ role: 'user', content: req.input }];
     const useTools = !req.structuredOutput && req.tools.length > 0;
     const toolByName = new Map(req.tools.map((t) => [t.name, t]));

@@ -32,7 +32,8 @@ export type EmployeeFormState = {
   avatarKey: string;
 };
 
-export const AVATAR_KEYS = ['developer', 'analyst', 'tester', 'manager', 'generic'] as const;
+// Bộ avatar dùng chung với Virtual Office (sprite theo `avatar_key`).
+export { AVATAR_KEYS } from '@claude-company/contracts';
 export const SENIORITIES: readonly Seniority[] = ['junior', 'middle', 'senior', 'expert'];
 export const RUNTIMES: readonly RuntimeKind[] = ['claude_agent_sdk', 'messages_api'];
 

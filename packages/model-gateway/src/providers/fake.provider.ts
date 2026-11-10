@@ -35,6 +35,8 @@ export type FakeInput = {
   reworkReasons: string[];
   reworkRound: number;
   directive: string;
+  /** Có khi run được resume sau quyết định phê duyệt (thẻ `approval_result`). */
+  approvalResult?: { actionType?: string; decision?: string; reason?: string | null; executed?: boolean };
   raw: string;
 };
 
@@ -58,6 +60,8 @@ const DEFAULT_USAGE: TokenUsage = {
 
 /**
  * Chỉ thị trong `objective` hoặc tin nhắn để chọn kịch bản, ví dụ `[[fake:error=retryable;times=2]]`.
+ * Thêm `only=execute` để các kịch bản lỗi (`error`, `timeout`) chỉ áp cho run thực thi, không áp cho run có đầu ra
+ * có cấu trúc (phân rã, review) của AI Manager, vốn đọc cùng `objective`.
  * Chỉ thị là dữ liệu test, không phải cơ chế sản phẩm: provider thật không đọc chúng.
  */
 function directivesOf(text: string): Map<string, string> {
@@ -87,6 +91,10 @@ export function readFakeInput(raw: string): FakeInput {
     reworkReasons: asArray<string>(parsed.rework_reasons).map(String),
     reworkRound: typeof parsed.review_round === 'number' ? parsed.review_round : 0,
     directive: [directive, objective, ...managerMessages].join('\n'),
+    approvalResult:
+      parsed.approval_result && typeof parsed.approval_result === 'object'
+        ? (parsed.approval_result as FakeInput['approvalResult'])
+        : undefined,
     raw,
   };
 }
@@ -112,7 +120,9 @@ export class FakeModelProvider implements ModelGateway {
 
     yield { type: 'session', sessionId: `fake-session-${key.slice(0, 12)}` };
 
-    const errorKind = directives.get('error');
+    // `only=execute`: run phân rã/review (có `structuredOutput`) bỏ qua kịch bản lỗi.
+    const faultsApply = directives.get('only') !== 'execute' || !req.structuredOutput;
+    const errorKind = faultsApply ? directives.get('error') : undefined;
     if (errorKind === 'retryable' && attempt <= Number(directives.get('times') ?? 1)) {
       yield* this.turn(req, io, null);
       yield {
@@ -132,7 +142,7 @@ export class FakeModelProvider implements ModelGateway {
       };
       return;
     }
-    if (directives.has('timeout')) {
+    if (faultsApply && directives.has('timeout')) {
       yield { type: 'model_call_started' };
       await waitForAbort(io.signal);
       yield {
@@ -232,6 +242,10 @@ export class FakeModelProvider implements ModelGateway {
     }
 
     if (paused) {
+      // Như MessagesApiProvider: lưu hội thoại TRƯỚC khi tạm dừng để run resume được sau cả khi worker restart.
+      if (req.runtimeKind === 'messages_api') {
+        await io.saveConversation([{ role: 'user', content: req.input }]);
+      }
       yield { type: 'paused_for_approval', approvalRequestId: paused.approvalRequestId };
       return;
     }
@@ -241,11 +255,22 @@ export class FakeModelProvider implements ModelGateway {
     yield { type: 'progress', percent: 75, summary: 'Đang viết kết quả' };
 
     const reasons = input.reworkReasons.length > 0 ? `\n\nĐã xử lý góp ý: ${input.reworkReasons.join('; ')}` : '';
+    const approval = input.approvalResult;
+    const approvalLine = approval
+      ? `\n\nKết quả phê duyệt ${approval.actionType ?? 'hành động'}: ${
+          approval.decision === 'approved'
+            ? approval.executed
+              ? 'đã được duyệt và thực thi (dry-run)'
+              : 'đã được duyệt nhưng chưa thực thi'
+            : `bị từ chối (${approval.reason ?? 'không nêu lý do'}), không thực hiện`
+        }`
+      : '';
     const body = [
       `# Kết quả: ${input.objective.slice(0, 80)}`,
       '',
       ...input.criteria.map((c) => `- [x] ${c.text}`),
       reasons,
+      approvalLine,
       input.artifacts.length > 0
         ? `\n\nTổng hợp ${input.artifacts.length} kết quả thành phần.`
         : '',

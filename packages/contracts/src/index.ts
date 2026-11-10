@@ -7,6 +7,7 @@ export * from './employee';
 export * from './task';
 export * from './approval';
 export * from './office';
+export * from './gamification';
 export * from './budget';
 export * from './run';
 export * from './tool-inputs';

@@ -8,7 +8,9 @@ import type {
   EmployeeEngine,
   EmployeeProfile,
   EmployeeProfileInput,
+  GamificationEngine,
   MemoryEngine,
+  OfficeSimulationEngine,
   OrchestrationEngine,
   OrganizationEngine,
   OrgChart,
@@ -27,7 +29,9 @@ import {
   BUDGET_SERVICE,
   COMMUNICATION_ENGINE,
   EMPLOYEE_ENGINE,
+  GAMIFICATION_ENGINE,
   MEMORY_ENGINE,
+  OFFICE_SIMULATION_ENGINE,
   ORCHESTRATION_ENGINE,
   ORGANIZATION_ENGINE,
   PERMISSION_ENGINE,
@@ -35,7 +39,9 @@ import {
 } from '../../apps/api/src/platform/engine-tokens';
 import { QueueService, type JobName, type JobPayload } from '../../apps/api/src/platform/queue/queues';
 import { StorageService } from '../../apps/api/src/platform/storage/storage.service';
+import { completeDisplayElapsed } from '../../apps/worker/src/jobs/office-jobs';
 import { processJob } from '../../apps/worker/src/jobs/run-jobs';
+import { DryRunLog } from '../../apps/worker/src/tools/adapters/dry-run-log';
 import { MODEL_GATEWAY } from '../../apps/worker/src/runtime/tokens';
 import { WorkerModule } from '../../apps/worker/src/worker.module';
 import { WorkerRuntime } from '../../apps/worker/src/worker-runtime';
@@ -155,6 +161,8 @@ export interface FlowHarness {
   redis: FakeRedis;
   relay: OutboxRelay;
   runtime: WorkerRuntime;
+  /** Log JSONL của adapter dry-run: nơi duy nhất ghi nhận hành động nhạy cảm đã được duyệt (FR-027). */
+  dryRun: DryRunLog;
   org: OrganizationEngine;
   employees: EmployeeEngine;
   tasks: TaskEngine;
@@ -163,6 +171,8 @@ export interface FlowHarness {
   memory: MemoryEngine;
   budget: BudgetService;
   permission: PermissionEngine;
+  office: OfficeSimulationEngine;
+  gamification: GamificationEngine;
   /** Chạy outbox relay và job trong hàng đợi cho tới khi hệ thống yên (không còn sự kiện/job mới). */
   settle(maxRounds?: number): Promise<void>;
   /** Một vòng: phát sự kiện chưa phát rồi chạy tối đa một job. `false` khi không còn gì để làm. */
@@ -206,6 +216,7 @@ export async function createFlowHarness(options: HarnessOptions): Promise<FlowHa
     RETRY_BACKOFF_INITIAL_MS: '1',
     RETRY_BACKOFF_MAX_MS: '5',
     RUN_WORKTREES_PATH: `${process.env.TEMP ?? '/tmp'}/cc-worktrees-${randomUUID()}`,
+    DRY_RUN_LOG_PATH: `${process.env.TEMP ?? '/tmp'}/cc-dryrun-${randomUUID()}`,
     ...options.env,
   });
   const redis = new FakeRedis();
@@ -241,6 +252,7 @@ export async function createFlowHarness(options: HarnessOptions): Promise<FlowHa
     redis,
     relay,
     runtime,
+    dryRun: new DryRunLog(config.DRY_RUN_LOG_PATH),
     org,
     employees,
     tasks: get<TaskEngine>(TASK_ENGINE),
@@ -249,6 +261,8 @@ export async function createFlowHarness(options: HarnessOptions): Promise<FlowHa
     memory: get<MemoryEngine>(MEMORY_ENGINE),
     budget: get<BudgetService>(BUDGET_SERVICE),
     permission: get<PermissionEngine>(PERMISSION_ENGINE),
+    office: get<OfficeSimulationEngine>(OFFICE_SIMULATION_ENGINE),
+    gamification: get<GamificationEngine>(GAMIFICATION_ENGINE),
 
     async step(hold: JobName[] = []) {
       const published = await relay.tick();
@@ -256,7 +270,13 @@ export async function createFlowHarness(options: HarnessOptions): Promise<FlowHa
       if (job) {
         await processJob(
           { id: job.jobId, name: job.name, data: job.payload },
-          { executor: runtime.executor, enqueue: (n, p, o) => queue.enqueue(n, p, o) },
+          {
+            executor: runtime.executor,
+            enqueue: (n, p, o) => queue.enqueue(n, p, o),
+            executeApproved: (payload) => runtime.executeApproved(payload),
+            completedElapsed: (payload) =>
+              completeDisplayElapsed(payload, { office: harness.office }),
+          },
         );
       }
       return published > 0 || job !== undefined;

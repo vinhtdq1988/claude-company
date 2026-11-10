@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, Inject, Post, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Inject,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import {
   DomainError,
   loginSchema,
@@ -12,6 +22,7 @@ import type { Request, Response } from 'express';
 import type { AppConfig } from '../config/config';
 import { CONFIG } from '../config/infra.providers';
 import { EMPLOYEE_ENGINE } from '../engine-tokens';
+import { AuthRateLimitGuard } from '../http/security';
 import { ZodValidationPipe } from '../http/zod.pipe';
 import { AuthService } from './auth.service';
 import { SESSION_COOKIE } from './cookies';
@@ -39,6 +50,7 @@ export class AuthController {
   }
 
   @Public()
+  @UseGuards(AuthRateLimitGuard)
   @Post('register')
   async register(
     @Body(new ZodValidationPipe(registerSchema)) body: RegisterInput,
@@ -51,6 +63,7 @@ export class AuthController {
   }
 
   @Public()
+  @UseGuards(AuthRateLimitGuard)
   @Post('login')
   @HttpCode(200)
   async login(
