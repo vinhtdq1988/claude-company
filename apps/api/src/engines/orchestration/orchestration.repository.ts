@@ -319,6 +319,15 @@ export class OrchestrationRepository {
       .orderBy(asc(toolInvocation.createdAt), asc(toolInvocation.id));
   }
 
+  /** Mọi lời gọi tool của task (mọi run) theo thứ tự thời gian: nguồn của `GET /tasks/{id}/operations`. */
+  listInvocationsOfTask(tx: Tx, companyId: string, taskId: string): Promise<InvocationRow[]> {
+    return tx
+      .select()
+      .from(toolInvocation)
+      .where(and(eq(toolInvocation.companyId, companyId), eq(toolInvocation.taskId, taskId)))
+      .orderBy(asc(toolInvocation.createdAt), asc(toolInvocation.id));
+  }
+
   /** Hành động đã thực thi thật qua adapter (có `adapter_mode`) của task. */
   listExecutedInvocations(tx: Tx, companyId: string, taskId: string): Promise<InvocationRow[]> {
     return tx

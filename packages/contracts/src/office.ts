@@ -134,7 +134,7 @@ export const employeeProfileViewSchema = z.object({
     avatarKey: z.string(),
     position: z.string(),
     kind: employeeKindSchema,
-    homeOrgUnitId: z.string(),
+    homeOrgUnitId: z.string().nullable(),
     status: employeeStatusSchema,
   }),
   status: z.object({

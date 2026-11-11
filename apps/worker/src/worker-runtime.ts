@@ -6,6 +6,7 @@ import {
   BUDGET_SERVICE,
   COMMUNICATION_ENGINE,
   CONFIG,
+  DASHBOARD_READER,
   EMPLOYEE_ENGINE,
   MEMORY_ENGINE,
   MODEL_CATALOG,
@@ -25,6 +26,7 @@ import {
   sdkMaxBudgetUsd,
   sdkTokenCeiling,
   type AppConfig,
+  type DashboardReader,
 } from '@claude-company/api';
 import type {
   BudgetService,
@@ -50,6 +52,7 @@ import { InputBuilder } from './runtime/input-builder';
 import { RunExecutor } from './runtime/run-loop';
 import { MODEL_GATEWAY, SANDBOX_CLIENT } from './runtime/tokens';
 import { ToolBroker } from './runtime/tool-broker';
+import { createCompanyOpsGuards, createCompanyOpsHandlers } from './tools/company-ops';
 import { createInternalHandlers } from './tools/internal-tools';
 import { RunWorkspaceManager } from './tools/run-workspace';
 import type { SandboxClient } from './tools/sandbox-client';
@@ -98,9 +101,19 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
     const orchestration = this.engine<OrchestrationEngine>(ORCHESTRATION_ENGINE);
     const communication = this.engine<CommunicationEngine>(COMMUNICATION_ENGINE);
 
+    // Tool điều hành của CEO AI Assistant: chỉ phụ thuộc interface engine, đi qua cùng ToolBroker như mọi tool.
+    const companyOps = {
+      organization: this.engine<OrganizationEngine>(ORGANIZATION_ENGINE),
+      employees,
+      tasks,
+      budget: this.engine<BudgetService>(BUDGET_SERVICE),
+      dashboard: this.engine<DashboardReader>(DASHBOARD_READER),
+      communication,
+    };
     const handlers = new Map([
       ...createWorkspaceHandlers({ sandbox: this.sandbox, toolTimeoutMs: config.TOOL_TIMEOUT_MS }),
       ...createInternalHandlers({ tasks, communication, storage: this.storage }),
+      ...createCompanyOpsHandlers(companyOps),
     ]);
     const permissions = this.engine<PermissionEngine>(PERMISSION_ENGINE);
     const broker = new ToolBroker({
@@ -108,6 +121,8 @@ export class WorkerRuntime implements OnModuleInit, OnModuleDestroy {
       permissions,
       tasks,
       handlers,
+      guards: createCompanyOpsGuards(companyOps),
+      maxWriteOpsPerRun: config.ASSISTANT_MAX_OPS_PER_RUN,
       // Human Approval: agent chỉ tạo đề xuất; hệ thống thực thi sau khi duyệt (action.execute-approved).
       humanApproval: new ApprovalRequestGate({ permissions, orchestration, tasks }),
       toolTimeoutMs: config.TOOL_TIMEOUT_MS,

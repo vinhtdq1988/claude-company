@@ -28,3 +28,4 @@ export {
 } from './platform/queue/queues';
 export { inTenant } from './platform/tenancy/tenant-store';
 export * from './platform/usage-budget/cost';
+export type { DashboardReader } from './platform/usage-budget/dashboard.service';

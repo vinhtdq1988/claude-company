@@ -12,6 +12,7 @@ export const JOB_NAMES = [
   'task.decompose',
   'task.synthesize',
   'review.run',
+  'task.propose',
   'office.completed-elapsed',
 ] as const;
 export type JobName = (typeof JOB_NAMES)[number];

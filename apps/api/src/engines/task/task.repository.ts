@@ -50,6 +50,7 @@ export function toTask(row: TaskRow): Task {
     costCap: row.costCap === null ? null : Number(row.costCap),
     completedAt: row.completedAt ? row.completedAt.toISOString() : null,
     createdAt: row.createdAt.toISOString(),
+    proposalStatus: row.proposalStatus,
   };
 }
 

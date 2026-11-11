@@ -101,10 +101,23 @@ export async function executeApprovedAction(
 
   const adapter = deps.adapters.find(approval.actionType);
   if (!adapter) return fail('NO_ADAPTER', `Chưa có adapter cho ${approval.actionType}`);
+  // Adapter nội bộ cần biết người duyệt và run/nhân viên đề xuất để dựng ngữ cảnh kèm `via` (R14 Decision 7).
+  const adapterContext = {
+    companyId: job.companyId,
+    traceId: job.traceId,
+    actionType: approval.actionType,
+    approverMemberId: approval.decidedBy ?? approval.approverMemberId,
+    employeeId: approval.employeeId,
+    runId: approval.runId,
+    taskId: approval.taskId,
+  };
 
   if (!claimed) {
     // Lần chạy trước sập giữa chừng: hỏi adapter theo idempotency key trước khi làm gì tiếp.
-    const state = await adapter.lookup(invocation.idempotencyKey);
+    const state = await adapter.lookup(invocation.idempotencyKey, {
+      ...adapterContext,
+      input: invocation.input,
+    });
     if (state === 'unknown') {
       await deps.orchestration.updateToolInvocation(sys, invocation.id, { status: 'unknown' });
       await blockTask(deps, sys, job.taskId, 'TOOL_OUTCOME_UNKNOWN');
@@ -113,7 +126,7 @@ export async function executeApprovedAction(
   }
 
   try {
-    const result = await adapter.execute(approval.payload, invocation.idempotencyKey);
+    const result = await adapter.execute(approval.payload, invocation.idempotencyKey, adapterContext);
     if (result.status !== 'ok') {
       return fail('ADAPTER_ERROR', result.message ?? 'Adapter không thực thi được');
     }

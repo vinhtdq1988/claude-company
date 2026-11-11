@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Test } from '@nestjs/testing';
-import type { EmployeeProfileInput, RequestContext } from '@claude-company/contracts';
+import { EMPLOYEE_NAME_MAX, type EmployeeProfileInput, type RequestContext } from '@claude-company/contracts';
 import { closeDatabase, initDatabase, newId, withTenant } from '@claude-company/db';
 import { domainEvent } from '@claude-company/db/schema/events';
 import { orgUnit } from '@claude-company/db/schema/organization';
@@ -18,7 +18,7 @@ import {
   TASK_ENGINE,
 } from '../../apps/api/src/platform/engine-tokens';
 import { EventPublisher } from '../../apps/api/src/platform/events/event-publisher';
-import { prepareDatabase, startInfra, type StartedInfra } from '../support/containers';
+import { prepareDatabase, seedDatabase, startInfra, type StartedInfra } from '../support/containers';
 import {
   FakeIdentityDirectory,
   FakeOrganizationEngine,
@@ -495,6 +495,91 @@ describe('Contract: EmployeeEngine (T061)', () => {
       await expect(engine.deactivateHumanMember(A, newId())).rejects.toMatchObject({
         code: 'NOT_FOUND',
       });
+    });
+  });
+
+  describe('provisionTeamManager (FR-016a)', () => {
+    const provision = (teamName: string, over: Partial<{ teamId: string; humanManagerId: string | null; orgUnitId: string }> = {}) =>
+      engine.provisionTeamManager(A, {
+        teamId: over.teamId ?? newId(),
+        teamName,
+        orgUnitId: over.orgUnitId ?? units.dev,
+        humanManagerId: over.humanManagerId === undefined ? null : over.humanManagerId,
+      });
+    const managersNamed = async (name: string) =>
+      (await engine.list(A, { kind: 'manager' })).filter((e) => e.name === name);
+
+    beforeAll(async () => {
+      await seedDatabase(infra); // mẫu `ai_manager` nằm trong seed
+    });
+
+    it('tạo AI Manager từ mẫu: kind manager, messages_api, ở department chứa Team, thành viên của Team', async () => {
+      const teamId = newId();
+      org.memberships = [{ teamId, memberKind: 'ai', memberId: (await engine.create(A, profile({ name: 'Dev của team' }))).id }];
+      const created = await provision('Web', { teamId });
+      expect(created).toMatchObject({
+        name: 'AI Manager Web',
+        kind: 'manager',
+        runtimeKind: 'messages_api',
+        roleTemplateKey: 'ai_manager',
+        homeOrgUnitId: units.dev,
+        manager: { kind: 'human', id: members.ceo }, // Team không có người quản lý → CEO
+        status: 'active',
+      });
+      expect(created.teamIds).toContain(teamId);
+      // Thành viên cũ của Team được giữ nguyên khi thêm AI Manager.
+      const inTeam = org.memberships.filter((m) => m.teamId === teamId);
+      expect(inTeam).toHaveLength(2);
+      expect(inTeam).toContainEqual({ teamId, memberKind: 'ai', memberId: created.id });
+      expect(await eventTypes(companyA)).toContain('employee.created');
+    });
+
+    it('manager trực tiếp là người quản lý Team khi có (humanManagerId)', async () => {
+      const created = await provision('Mobile', { humanManagerId: members.mgr as string });
+      expect(created.manager).toEqual({ kind: 'human', id: members.mgr });
+    });
+
+    it('tên cắt theo EMPLOYEE_NAME_MAX', async () => {
+      const created = await provision('T'.repeat(200));
+      expect(created.name).toHaveLength(EMPLOYEE_NAME_MAX);
+      expect(created.name.startsWith('AI Manager TTT')).toBe(true);
+    });
+
+    it('hai lần gọi đồng thời cho cùng Team chỉ tạo một AI Manager; Team khác tạo riêng', async () => {
+      const teamId = newId();
+      const [a, b] = await Promise.all([
+        provision('Song song', { teamId }),
+        provision('Song song', { teamId }),
+      ]);
+      expect(a.id).toBe(b.id);
+      expect(await managersNamed('AI Manager Song song')).toHaveLength(1);
+
+      const [x, y] = await Promise.all([provision('Team X'), provision('Team Y')]);
+      expect(x.id).not.toBe(y.id);
+    });
+
+    it('công ty không có người thật hợp lệ → MANAGEMENT_CHAIN_INVALID, không tạo gì', async () => {
+      const B = ctx(companyB); // công ty B không có human_member nào
+      const before = (await engine.list(B, {})).length;
+      await expect(
+        engine.provisionTeamManager(B, { teamId: newId(), teamName: 'Mồ côi', orgUnitId: units.devB, humanManagerId: null }),
+      ).rejects.toMatchObject({ code: 'MANAGEMENT_CHAIN_INVALID' });
+      expect((await engine.list(B, {})).length).toBe(before);
+    });
+
+    it('allowed_models chặn model của mẫu ai_manager → MODEL_NOT_ALLOWED, không tạo AI Manager và Team không đổi', async () => {
+      const teamId = newId();
+      const before = org.memberships.length;
+      allowedByUnit.set(units.qa, ['mo-hinh-khac']);
+      try {
+        await expect(provision('Bị chặn model', { teamId, orgUnitId: units.qa })).rejects.toMatchObject({
+          code: 'MODEL_NOT_ALLOWED',
+        });
+      } finally {
+        allowedByUnit.delete(units.qa);
+      }
+      expect(await managersNamed('AI Manager Bị chặn model')).toHaveLength(0);
+      expect(org.memberships).toHaveLength(before);
     });
   });
 

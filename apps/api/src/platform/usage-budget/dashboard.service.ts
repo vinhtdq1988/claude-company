@@ -12,13 +12,18 @@ import { EMPLOYEE_ENGINE, ORGANIZATION_ENGINE, TASK_ENGINE } from '../engine-tok
 import { UsageBudgetService } from './budget.service';
 import { findNode, subtreeIds } from './org-tree';
 
+/** Phần đọc của Dashboard mà engine/worker khác phụ thuộc (token `DASHBOARD_READER`). */
+export interface DashboardReader {
+  get(ctx: RequestContext, query: DashboardQuery): Promise<Dashboard>;
+}
+
 /**
  * Company Dashboard (FR-040, SC-008). Task và nhân viên lấy qua interface engine; token và chi phí lấy từ
  * `usage_ledger` qua `BudgetService.getUsage`, cùng một nguồn với tổng theo từng task nên hai con số khớp nhau.
  * Chỉ tổng hợp trong phạm vi quản lý của người xem.
  */
 @Injectable()
-export class DashboardService {
+export class DashboardService implements DashboardReader {
   constructor(
     @Inject(TASK_ENGINE) private readonly tasks: Pick<TaskEngine, 'getStats'>,
     @Inject(EMPLOYEE_ENGINE) private readonly employees: Pick<EmployeeEngine, 'list'>,
@@ -69,7 +74,9 @@ export class DashboardService {
     const visible = scope.companyWide ? undefined : new Set(scope.employeeIds);
     const all = await this.employees.list(ctx, {});
     return all.filter(
-      (e) => (!unitIds || unitIds.has(e.homeOrgUnitId)) && (!visible || visible.has(e.id)),
+      (e) =>
+        (!unitIds || (e.homeOrgUnitId !== null && unitIds.has(e.homeOrgUnitId))) &&
+        (!visible || visible.has(e.id)),
     ).length;
   }
 }

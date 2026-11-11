@@ -1,3 +1,4 @@
+import { CEO_ASSISTANT_TEMPLATE_KEY } from '@claude-company/contracts';
 import { renderInput } from '@claude-company/model-gateway';
 import type {
   EmployeeEngine,
@@ -56,7 +57,7 @@ export function fitArtifacts(
 export type InputBuilderDeps = {
   tasks: TaskEngine;
   employees: Pick<EmployeeEngine, 'list' | 'getCapacity'>;
-  organization: Pick<OrganizationEngine, 'resolveManagedScope'>;
+  organization: Pick<OrganizationEngine, 'resolveManagedScope' | 'getOrgChart'>;
   memory: MemoryEngine;
   communication: Pick<CommunicationEngine, 'listTaskMessages'>;
   artifactContextMaxBytes: number;
@@ -89,6 +90,11 @@ const INSTRUCTIONS: Record<RunPurpose, string> = {
   synthesize:
     'Bạn là AI Manager. Tổng hợp kết quả của các task con thành MỘT artifact cho task cha và nộp bằng tool ' +
     'artifact_publish. Đối chiếu từng tiêu chí nghiệm thu của task cha.',
+  propose:
+    'Bạn là CEO AI Assistant. Từ yêu cầu của CEO trong task_objective, soạn đề xuất cho task và trả về DUY NHẤT một ' +
+    'JSON {title, acceptanceCriteria[], expectedOutput, deadline, priority}. Mỗi tiêu chí nghiệm thu phải kiểm chứng ' +
+    'được và bám sát lời CEO; deadline là thời điểm ISO 8601 trong tương lai (ưu tiên deadline CEO đã nêu); priority ' +
+    'là low|medium|high|urgent. Chỉ nhắc tới đơn vị, Team, nhân viên có trong dữ liệu. Bước này không có tool nào.',
 };
 
 export function systemPromptFor(base: string, purpose: RunPurpose): string {
@@ -112,7 +118,45 @@ export class InputBuilder {
         return this.review(ctx, task);
       case 'synthesize':
         return this.synthesize(ctx, task, employeeId);
+      case 'propose':
+        return this.propose(ctx, task);
     }
+  }
+
+  /**
+   * Lời CEO, danh sách rút gọn đơn vị/Team/nhân viên đang hoạt động (id, tên, vị trí) và giá trị hiện tại của deadline,
+   * priority (do CEO nêu hoặc giá trị tạm của hệ thống). Không có tool; CEO AI Assistant không được đưa vào danh sách.
+   */
+  private async propose(ctx: RequestContext, task: TaskDetail): Promise<string> {
+    // Run `propose` có actor AI nên Organization Engine trả sơ đồ rỗng; đọc bằng ngữ cảnh hệ thống.
+    const system: RequestContext = { ...ctx, actor: { kind: 'system' } };
+    const [chart, profiles] = await Promise.all([
+      this.deps.organization.getOrgChart(system),
+      this.deps.employees.list(system, {}),
+    ]);
+    const units: Array<{ id: string; name: string; kind: string }> = [];
+    const teams: Array<{ id: string; name: string; orgUnitId: string }> = [];
+    const visit = (nodes: typeof chart.roots) => {
+      for (const node of nodes) {
+        units.push({ id: node.id, name: node.name, kind: node.kind });
+        for (const team of node.teams) teams.push({ id: team.id, name: team.name, orgUnitId: node.id });
+        visit(node.children);
+      }
+    };
+    visit(chart.roots);
+    return renderInput({
+      task_objective: task.objective,
+      org_units: units,
+      teams,
+      employees: profiles
+        .filter((p) => p.status === 'active' && p.homeOrgUnitId !== null)
+        .map((p) => ({ id: p.id, name: p.name, position: p.position })),
+      current_values: {
+        now: new Date().toISOString(),
+        deadline: task.deadline,
+        priority: task.priority,
+      },
+    });
   }
 
   private base(task: Task) {
@@ -146,8 +190,12 @@ export class InputBuilder {
       this.deps.organization.resolveManagedScope(ctx, task.createdByMemberId),
       this.deps.employees.list(ctx, {}),
     ]);
+    // CEO AI Assistant tự thực hiện yêu cầu của CEO nên không bao giờ là người nhận task con (R10, R14).
     const inScope = profiles.filter(
-      (p) => p.status === 'active' && (scope.companyWide || scope.employeeIds.includes(p.id)),
+      (p) =>
+        p.status === 'active' &&
+        p.roleTemplateKey !== CEO_ASSISTANT_TEMPLATE_KEY &&
+        (scope.companyWide || scope.employeeIds.includes(p.id)),
     );
     const employees = await Promise.all(
       inScope.map(async (p) => {

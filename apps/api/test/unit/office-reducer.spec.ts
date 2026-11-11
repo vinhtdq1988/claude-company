@@ -185,6 +185,15 @@ describe('office-reducer: bảng ánh xạ domain event → trạng thái', () =
     }
   });
 
+  it('run.started purpose propose (CEO AI Assistant) → communicating; run.succeeded của propose không để lại trạng thái', () => {
+    expect(state([started('propose')])).toBe('communicating');
+    const s = state([
+      started('propose'),
+      ev('run.succeeded', { runId: R1, taskId: T1, employeeId: EMP, purpose: 'propose' }),
+    ]);
+    expect(s).toBe('idle');
+  });
+
   it.each(['run.failed', 'run.timed_out'])('%s → error_blocked', (type) => {
     const s = run([
       started(),

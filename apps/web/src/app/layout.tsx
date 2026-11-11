@@ -65,7 +65,10 @@ export function Layout() {
       </header>
       {companyId && (
         <nav className="nav" aria-label="Điều hướng">
-          {COMPANY_SCREENS.map((s) => (
+          {COMPANY_SCREENS.filter(
+            (s) =>
+              !s.ceoOnly || me?.memberships.some((m) => m.companyId === companyId && m.role === 'ceo'),
+          ).map((s) => (
             <NavLink key={s.path} to={`/c/${companyId}/${s.path}`}>
               {t(s.labelKey)}
             </NavLink>

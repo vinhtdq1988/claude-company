@@ -246,6 +246,7 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     completedAt: null,
     createdAt: '2026-11-09T00:00:00.000Z',
     parentTaskId: null,
+    proposalStatus: null,
     ...overrides,
   };
 }

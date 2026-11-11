@@ -12,3 +12,4 @@ export * from './budget';
 export * from './run';
 export * from './tool-inputs';
 export * from './auth';
+export * from './ceo-assistant';

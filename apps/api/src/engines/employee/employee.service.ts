@@ -18,6 +18,9 @@ import {
   type TaskEngine,
   type TaskStatus,
   type Workspace,
+  CEO_ASSISTANT_TEMPLATE_KEY,
+  DEFAULT_MAX_CONCURRENT_TASKS,
+  EMPLOYEE_NAME_MAX,
   roleTemplateDefaultsSchema,
 } from '@claude-company/contracts';
 import { newId, withGlobal, type Tx } from '@claude-company/db';
@@ -31,8 +34,14 @@ import {
 } from '../../platform/engine-tokens';
 import { EventPublisher } from '../../platform/events/event-publisher';
 import { inTenant } from '../../platform/tenancy/tenant-store';
-import { EmployeeRepository, type EmployeeRow } from './employee.repository';
+import {
+  EmployeeRepository,
+  pgErrorCode,
+  UNIQUE_VIOLATION,
+  type EmployeeRow,
+} from './employee.repository';
 import { HumanMemberService } from './human-member.service';
+import { WorkspaceService } from './workspace.service';
 import {
   checkProposedManager,
   walkManagementChain,
@@ -119,9 +128,61 @@ export class EmployeeService implements EmployeeEngine {
     };
   }
 
+  /** Lấy `WorkspaceService` muộn qua ModuleRef để không buộc mọi module dựng `EmployeeService` phải cung cấp nó. */
+  getWorkspaceRoot(ctx: RequestContext): Promise<string> {
+    return this.moduleRef.get(WorkspaceService, { strict: false }).getRoot(ctx);
+  }
+
+  // --- CEO AI Assistant (FR-046) ---
+
+  async getCeoAssistant(ctx: RequestContext): Promise<EmployeeProfile | null> {
+    await this.assertCeoOrSystem(ctx);
+    const row = await inTenant(ctx, (tx) => this.repo.findCeoAssistant(tx, ctx.companyId));
+    return row ? this.profileOf(ctx, row, true) : null;
+  }
+
+  /** Chỉ CEO (hoặc hệ thống) được tạo, xem và quản lý CEO AI Assistant; người dùng khác và AI Employee bị từ chối. */
+  private async assertCeoOrSystem(ctx: RequestContext): Promise<void> {
+    if (ctx.actor.kind === 'system') return;
+    if (ctx.actor.kind === 'human') {
+      const memberId = ctx.actor.memberId;
+      const members = await this.members.listHumanMembers(ctx);
+      if (members.some((m) => m.id === memberId && m.role === 'ceo' && !m.disabledAt)) return;
+    }
+    throw new DomainError('FORBIDDEN', 'Chỉ CEO được thao tác với CEO AI Assistant');
+  }
+
+  /**
+   * Hồ sơ của CEO AI Assistant do hệ thống quyết định (R14 Decision 1): `kind = employee`, `runtimeKind = messages_api`,
+   * không có đơn vị nhà, manager trực tiếp là CEO. Giá trị người gọi gửi lên cho các trường này bị ghi đè.
+   */
+  private async normalizeAssistantProfile(
+    ctx: RequestContext,
+    input: EmployeeProfileInput,
+  ): Promise<EmployeeProfileInput> {
+    await this.assertCeoOrSystem(ctx);
+    const ceo = (await this.members.listHumanMembers(ctx)).find(
+      (m) => m.role === 'ceo' && !m.disabledAt,
+    );
+    if (!ceo) {
+      throw new DomainError('MANAGEMENT_CHAIN_INVALID', 'Công ty chưa có CEO đang hoạt động', {
+        reason: 'HUMAN_INACTIVE',
+      });
+    }
+    return {
+      ...input,
+      kind: 'employee',
+      runtimeKind: 'messages_api',
+      homeOrgUnitId: null,
+      manager: { kind: 'human', id: ceo.id },
+    };
+  }
+
   // --- tạo, sửa ---
 
-  async create(ctx: RequestContext, input: EmployeeProfileInput): Promise<EmployeeProfile> {
+  async create(ctx: RequestContext, rawInput: EmployeeProfileInput): Promise<EmployeeProfile> {
+    const isAssistant = rawInput.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY;
+    const input = isAssistant ? await this.normalizeAssistantProfile(ctx, rawInput) : rawInput;
     // Kiểm tra bắt buộc manager trước mọi thứ khác (US2-AS2): thiếu manager luôn là MANAGER_REQUIRED.
     const manager = input.manager as ManagerRef | null | undefined;
     if (!manager?.id) {
@@ -135,7 +196,10 @@ export class EmployeeService implements EmployeeEngine {
       await this.lockChain(tx, ctx);
       const id = newId();
       await this.assertChain(tx, ctx, { id, kind: input.kind, status: 'active', manager });
-      const inserted = await this.repo.insert(tx, {
+      if (isAssistant && (await this.repo.findCeoAssistant(tx, ctx.companyId))) {
+        throw new DomainError('CEO_ASSISTANT_EXISTS', 'Công ty đã có CEO AI Assistant');
+      }
+      const inserted = await this.insertEmployee(tx, {
         id,
         companyId: ctx.companyId,
         name: input.name,
@@ -180,6 +244,7 @@ export class EmployeeService implements EmployeeEngine {
     const outcome = await inTenant(ctx, async (tx) => {
       await this.lockChain(tx, ctx);
       const current = await this.requireActive(tx, ctx, id);
+      this.assertAssistantRules(current, patch);
       const next = this.merge(current, patch);
       const changed = (Object.keys(patch) as Array<keyof EmployeeProfileInput>).filter(
         (key) =>
@@ -241,6 +306,119 @@ export class EmployeeService implements EmployeeEngine {
       return { row, changed };
     });
     return this.profileOf(ctx, outcome.row, true);
+  }
+
+  /**
+   * CEO AI Assistant có bốn trường cố định (`kind`, `runtimeKind`, `manager`, `homeOrgUnitId`) và không ai biến
+   * nhân viên khác thành trợ lý hoặc ngược lại (FR-046, R14 Decision 4).
+   */
+  private assertAssistantRules(current: EmployeeRow, patch: Partial<EmployeeProfileInput>): void {
+    const wasAssistant = current.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY;
+    const willBeAssistant =
+      patch.roleTemplateKey === undefined
+        ? wasAssistant
+        : patch.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY;
+    if (wasAssistant !== willBeAssistant) {
+      throw new DomainError('VALIDATION_FAILED', 'Không đổi được vai trò CEO AI Assistant', {
+        field: 'roleTemplateKey',
+      });
+    }
+    if (!wasAssistant) return;
+    const frozen: Array<[keyof EmployeeProfileInput, unknown]> = [
+      ['kind', current.kind],
+      ['runtimeKind', current.runtimeKind],
+      ['manager', { kind: current.managerKind, id: current.managerId }],
+      ['homeOrgUnitId', current.homeOrgUnitId],
+    ];
+    for (const [field, value] of frozen) {
+      const proposed = patch[field];
+      if (proposed !== undefined && JSON.stringify(proposed) !== JSON.stringify(value)) {
+        throw new DomainError(
+          'VALIDATION_FAILED',
+          `CEO AI Assistant có "${field}" cố định, không sửa được`,
+          { field },
+        );
+      }
+    }
+  }
+
+  /** Chèn nhân viên; vi phạm chỉ mục "một trợ lý mỗi công ty" (tạo đồng thời) cũng trả `CEO_ASSISTANT_EXISTS`. */
+  private async insertEmployee(
+    tx: Tx,
+    values: Parameters<EmployeeRepository['insert']>[1],
+  ): Promise<EmployeeRow> {
+    try {
+      return await this.repo.insert(tx, values);
+    } catch (error) {
+      if (pgErrorCode(error) === UNIQUE_VIOLATION && /one_ceo_assistant/.test(String(error))) {
+        throw new DomainError('CEO_ASSISTANT_EXISTS', 'Công ty đã có CEO AI Assistant');
+      }
+      throw error;
+    }
+  }
+
+  /** Team đang được tạo AI Manager: các lần gọi đồng thời cho cùng team dùng chung một kết quả. */
+  private readonly provisioning = new Map<string, Promise<EmployeeProfile>>();
+
+  async provisionTeamManager(
+    ctx: RequestContext,
+    input: { teamId: string; teamName: string; orgUnitId: string; humanManagerId: string | null },
+  ): Promise<EmployeeProfile> {
+    const key = `${ctx.companyId}:${input.teamId}`;
+    const running = this.provisioning.get(key);
+    if (running) return running;
+    const job = this.createTeamManager(ctx, input).finally(() => this.provisioning.delete(key));
+    this.provisioning.set(key, job);
+    return job;
+  }
+
+  private async createTeamManager(
+    ctx: RequestContext,
+    input: { teamId: string; teamName: string; orgUnitId: string; humanManagerId: string | null },
+  ): Promise<EmployeeProfile> {
+    const templates = await this.listRoleTemplates();
+    const template = templates.find((t) => t.key === 'ai_manager');
+    if (!template) {
+      throw new DomainError('NOT_FOUND', 'Không tìm thấy mẫu vai trò ai_manager');
+    }
+    const humanManagerId =
+      input.humanManagerId ??
+      (await this.members.listHumanMembers(ctx)).find((m) => m.role === 'ceo')?.id;
+    if (!humanManagerId) {
+      throw new DomainError(
+        'MANAGEMENT_CHAIN_INVALID',
+        'Công ty chưa có người thật để làm manager trực tiếp của AI Manager',
+        { reason: 'HUMAN_INACTIVE' },
+      );
+    }
+    const d = template.defaults;
+    const created = await this.create(ctx, {
+      name: `AI Manager ${input.teamName}`.slice(0, EMPLOYEE_NAME_MAX),
+      avatarKey: d.avatarKey,
+      position: d.position,
+      homeOrgUnitId: input.orgUnitId,
+      kind: 'manager',
+      roleTemplateKey: template.key,
+      personality: d.personality,
+      skills: d.skills,
+      seniority: d.seniority,
+      modelId: d.modelId,
+      runtimeKind: 'messages_api',
+      systemPrompt: d.systemPrompt,
+      toolGrants: d.toolGrants,
+      workspaceId: null,
+      manager: { kind: 'human', id: humanManagerId },
+      maxConcurrentTasks: DEFAULT_MAX_CONCURRENT_TASKS,
+    });
+    const memberships = await this.organization.listTeamMemberships(ctx);
+    const members = memberships
+      .filter((m) => m.teamId === input.teamId)
+      .map((m) => ({ kind: m.memberKind, id: m.memberId }));
+    await this.organization.setTeamMembers(ctx, input.teamId, [
+      ...members,
+      { kind: 'ai', id: created.id },
+    ]);
+    return { ...created, teamIds: [...created.teamIds, input.teamId] };
   }
 
   // --- vòng đời ---
@@ -441,8 +619,16 @@ export class EmployeeService implements EmployeeEngine {
         field: 'runtimeKind',
       });
     }
+    const isAssistant = profile.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY;
+    if (profile.homeOrgUnitId === null && !isAssistant) {
+      throw new DomainError('VALIDATION_FAILED', 'Nhân viên phải thuộc một department', {
+        field: 'homeOrgUnitId',
+      });
+    }
     if (touched('toolGrants', 'runtimeKind')) {
-      const issues = validateToolGrants(profile.toolGrants, profile.runtimeKind);
+      const issues = validateToolGrants(profile.toolGrants, profile.runtimeKind, {
+        isCeoAssistant: isAssistant,
+      });
       if (issues.length > 0) {
         throw new DomainError(
           'VALIDATION_FAILED',
@@ -457,7 +643,7 @@ export class EmployeeService implements EmployeeEngine {
         modelId: profile.modelId,
       });
     }
-    if (touched('homeOrgUnitId')) {
+    if (touched('homeOrgUnitId') && profile.homeOrgUnitId !== null) {
       const unit = await this.organization.getOrgUnit(ctx, profile.homeOrgUnitId);
       if (!unit || unit.kind !== 'department') {
         throw new DomainError(
@@ -566,7 +752,7 @@ export class EmployeeService implements EmployeeEngine {
       name: patch.name ?? row.name,
       avatarKey: patch.avatarKey ?? row.avatarKey,
       position: patch.position ?? row.position,
-      homeOrgUnitId: patch.homeOrgUnitId ?? row.homeOrgUnitId,
+      homeOrgUnitId: patch.homeOrgUnitId === undefined ? row.homeOrgUnitId : patch.homeOrgUnitId,
       kind: patch.kind ?? row.kind,
       roleTemplateKey:
         patch.roleTemplateKey === undefined ? row.roleTemplateKey : patch.roleTemplateKey,

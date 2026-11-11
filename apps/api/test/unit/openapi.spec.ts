@@ -7,6 +7,7 @@ import { HumanMemberController } from '../../src/engines/employee/human-member.c
 import { WorkspaceController } from '../../src/engines/employee/workspace.controller';
 import { GamificationController } from '../../src/engines/gamification/gamification.controller';
 import { OfficeController } from '../../src/engines/office-simulation/office.controller';
+import { CeoAssistantController } from '../../src/engines/orchestration/ceo-assistant.controller';
 import { RunController } from '../../src/engines/orchestration/run.controller';
 import { OrganizationController } from '../../src/engines/organization/organization.controller';
 import { ApprovalController } from '../../src/engines/permission/approval.controller';
@@ -31,6 +32,7 @@ const CONTROLLERS = [
   TaskController,
   ApprovalController,
   RunController,
+  CeoAssistantController,
   BudgetController,
   DashboardController,
   OfficeController,

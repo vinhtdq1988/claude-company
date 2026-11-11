@@ -125,7 +125,7 @@ export class EmployeeController {
     @Body(new ZodValidationPipe(updateEmployeeSchema)) body: UpdateEmployeeInput,
   ): Promise<EmployeeProfile> {
     // Chuyển nhân viên sang department khác cũng cần quyền ở nơi nhận.
-    if (body.homeOrgUnitId !== undefined) {
+    if (typeof body.homeOrgUnitId === 'string') {
       await this.permissions.authorize(ctx, 'employee.manage', {
         kind: 'org_unit',
         id: body.homeOrgUnitId,

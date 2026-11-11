@@ -22,6 +22,7 @@ export const PURPOSE_LABEL_KEYS: Readonly<Record<RunPurpose, MessageKey>> = {
   decompose: 'history.purpose.decompose',
   review: 'history.purpose.review',
   synthesize: 'history.purpose.synthesize',
+  propose: 'history.purpose.propose',
 };
 
 export const STEP_KIND_LABEL_KEYS: Readonly<Record<RunStepKind, MessageKey>> = {

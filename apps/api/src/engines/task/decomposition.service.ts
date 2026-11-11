@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
+  CEO_ASSISTANT_TEMPLATE_KEY,
   DomainError,
   decompositionPlanSchema,
   type DecompositionPlan,
@@ -80,6 +81,17 @@ export class DecompositionService {
       return [];
     }
 
+    // Trợ lý tự thực hiện yêu cầu của CEO (R10, R14): task giao cho trợ lý chỉ được `confirm`, không phân rã.
+    if (parent.assigneeKind === 'ai_employee') {
+      const assignee = await this.employees.get(ctx, parent.assigneeId).catch(() => null);
+      if (assignee?.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY) {
+        throw new DomainError(
+          'NO_SUITABLE_ASSIGNEE',
+          'Task giao cho CEO AI Assistant không được phân rã',
+          { mode: plan.mode, assigneeId: parent.assigneeId },
+        );
+      }
+    }
     if (plan.subtasks.length === 0) {
       throw new DomainError('NO_SUITABLE_ASSIGNEE', 'Kế hoạch phân rã không có task con', {
         mode: plan.mode,
@@ -103,7 +115,12 @@ export class DecompositionService {
             id: sub.assigneeId,
           })
         : false;
-      if (!employee || employee.status !== 'active' || !inScope) {
+      if (
+        !employee ||
+        employee.status !== 'active' ||
+        !inScope ||
+        employee.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY // task con không giao cho trợ lý cấp công ty
+      ) {
         throw new DomainError('NO_SUITABLE_ASSIGNEE', 'Không có nhân viên phù hợp cho task con', {
           subtaskIndex: index,
           assigneeId: sub.assigneeId,

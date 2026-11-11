@@ -6,6 +6,8 @@ import { ErrorNotice } from '../../components/ErrorNotice';
 import { describeError, t, type MessageKey } from '../../i18n';
 import { ApiError } from '../../lib/api';
 import { useMembers } from '../org/org-queries';
+import { OperationsList } from '../assistant/OperationsList';
+import { ProposalConfirm } from '../assistant/ProposalConfirm';
 import { useAssigneeLookup } from './TaskBoardPage';
 import {
   allowedActions,
@@ -257,6 +259,11 @@ export function TaskDetailPage({ companyId, taskId, onBack, onOpen }: Props) {
         <span className="badge">{t(`tasks.status.${d.status}`)}</span>
         <span className={`badge priority-${d.priority}`}>{t(`tasks.priority.${d.priority}`)}</span>
         {d.isOverdue && <span className="badge badge-danger">{t('tasks.card.overdue')}</span>}
+        {d.assignedByEmployee && (
+          <span className="badge" title={d.assignedByEmployee.name}>
+            {t('assistant.createdBy')}
+          </span>
+        )}
         <div className="editor-row">
           {buttons.map((action) => (
             <button
@@ -281,6 +288,10 @@ export function TaskDetailPage({ companyId, taskId, onBack, onOpen }: Props) {
         >
           <strong>{t('task.detail.blocked')}:</strong> {t(blockedKey)}
         </div>
+      )}
+
+      {d.status === 'draft' && d.proposalStatus !== null && (
+        <ProposalConfirm key={d.id} companyId={companyId} task={d} />
       )}
 
       <progress
@@ -420,13 +431,17 @@ export function TaskDetailPage({ companyId, taskId, onBack, onOpen }: Props) {
               <span className="badge">
                 {a.adapterMode === 'dry_run'
                   ? t('task.detail.executed.dryRun')
-                  : t('task.detail.executed.live')}
+                  : a.adapterMode === 'internal'
+                    ? t('task.detail.executed.internal')
+                    : t('task.detail.executed.live')}
               </span>{' '}
               <span className="muted">{formatTime(a.executedAt)}</span>
             </li>
           ))}
         </ul>
       </section>
+
+      {d.assigneeKind === 'ai_employee' && <OperationsList companyId={companyId} taskId={taskId} />}
 
       <p>
         <Link to={`/c/${companyId}/history?task=${taskId}`}>{t('task.detail.history')}</Link>

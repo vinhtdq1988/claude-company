@@ -7,7 +7,7 @@ import { describeError, t } from '../../i18n';
 import { api } from '../../lib/api';
 import { queryClient, queryKeys } from '../../lib/query';
 import { useMyMembership } from '../../lib/session';
-import { useWorkspaces } from './employee-queries';
+import { useWorkspaces, useWorkspaceSettings } from './employee-queries';
 
 function AddWorkspaceForm({ companyId }: { companyId: string }) {
   const [name, setName] = useState('');
@@ -89,6 +89,61 @@ function AddWorkspaceForm({ companyId }: { companyId: string }) {
   );
 }
 
+function RootSettings({ companyId, isCeo }: { companyId: string; isCeo: boolean }) {
+  const settings = useWorkspaceSettings(companyId);
+  const [rootPath, setRootPath] = useState('');
+
+  const save = useMutation({
+    mutationFn: (next: string | null) =>
+      api.put(`/companies/${companyId}/workspaces/settings`, { rootPath: next }),
+    onSuccess: async () => {
+      setRootPath('');
+      await queryClient.invalidateQueries({ queryKey: queryKeys.workspaces(companyId) });
+    },
+  });
+
+  if (!settings.data) return null;
+  const { rootPath: custom, effectiveRoot } = settings.data;
+
+  const onSubmit = (event: FormEvent) => {
+    event.preventDefault();
+    save.mutate(rootPath.trim());
+  };
+
+  return (
+    <form className="card card-wide" onSubmit={onSubmit} aria-label={t('workspaces.root.title')}>
+      <h3>{t('workspaces.root.title')}</h3>
+      <p className="muted">{t('workspaces.root.intro')}</p>
+      <p>
+        {t('workspaces.root.current')}: <code>{effectiveRoot}</code> (
+        {custom ? t('workspaces.root.custom') : t('workspaces.root.default')})
+      </p>
+      {isCeo && (
+        <>
+          <label>
+            {t('workspaces.root.input')}
+            <input
+              value={rootPath}
+              onChange={(e) => setRootPath(e.target.value)}
+              maxLength={512}
+              name="workspace-root"
+            />
+          </label>
+          {save.isError && <ErrorNotice error={save.error} />}
+          <button type="submit" disabled={save.isPending || rootPath.trim() === ''}>
+            {t('workspaces.root.save')}
+          </button>
+          {custom && (
+            <button type="button" disabled={save.isPending} onClick={() => save.mutate(null)}>
+              {t('workspaces.root.reset')}
+            </button>
+          )}
+        </>
+      )}
+    </form>
+  );
+}
+
 /** Workspace đã đăng ký. Chỉ CEO thấy biểu mẫu đăng ký (server vẫn cưỡng chế bằng 403). */
 export default function WorkspacesPage() {
   const { companyId = '' } = useParams();
@@ -110,6 +165,7 @@ export default function WorkspacesPage() {
         <h2>{t('workspaces.title')}</h2>
         <p className="muted">{t('workspaces.intro')}</p>
       </header>
+      <RootSettings companyId={companyId} isCeo={isCeo} />
       {workspaces.data.length === 0 ? (
         <p className="empty">{t('workspaces.empty')}</p>
       ) : (

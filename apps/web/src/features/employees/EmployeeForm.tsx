@@ -1,10 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import { useMutation } from '@tanstack/react-query';
-import type {
-  EmployeeKind,
-  EmployeeProfile,
-  RuntimeKind,
-  Seniority,
+import {
+  CEO_ASSISTANT_TEMPLATE_KEY,
+  type EmployeeKind,
+  type EmployeeProfile,
+  type RuntimeKind,
+  type Seniority,
 } from '@claude-company/contracts';
 import { ErrorNotice } from '../../components/ErrorNotice';
 import { t, type MessageKey } from '../../i18n';
@@ -25,6 +26,7 @@ import {
   changeRuntime,
   emptyForm,
   formFromProfile,
+  isAssistantForm,
   RUNTIMES,
   SENIORITIES,
   toggleTool,
@@ -90,7 +92,9 @@ export function EmployeeForm({ companyId, employee, onDone, onCancel }: Props) {
     setForm((f) => applyTemplate({ ...f, modelId, homeOrgUnitId }, template));
   };
 
-  const tools = toolOptions(current.runtimeKind);
+  // Mẫu ceo_assistant: ẩn đơn vị nhà, manager cố định là CEO, runtime và công cụ chỉ đọc (FR-046, FR-049).
+  const assistant = isAssistantForm(current) || employee?.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY;
+  const tools = toolOptions(current.runtimeKind, assistant);
   const title = employee ? t('employee.form.titleEdit') : t('employee.form.titleNew');
 
   return (
@@ -132,25 +136,28 @@ export function EmployeeForm({ companyId, employee, onDone, onCancel }: Props) {
             name="position"
           />
         </label>
-        <label>
-          {t('employee.form.unit')}
-          <select
-            value={homeOrgUnitId}
-            onChange={(e) => update({ homeOrgUnitId: e.target.value })}
-            required
-          >
-            {departments.length === 0 && <option value="">{t('employee.form.unit.pick')}</option>}
-            {departments.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {!assistant && (
+          <label>
+            {t('employee.form.unit')}
+            <select
+              value={homeOrgUnitId}
+              onChange={(e) => update({ homeOrgUnitId: e.target.value })}
+              required
+            >
+              {departments.length === 0 && <option value="">{t('employee.form.unit.pick')}</option>}
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label>
           {t('employee.form.kind')}
           <select
             value={form.kind}
+            disabled={assistant}
             onChange={(e) => setForm((f) => changeKind(f, e.target.value as EmployeeKind))}
           >
             <option value="employee">{t('employees.kind.employee')}</option>
@@ -211,7 +218,7 @@ export function EmployeeForm({ companyId, employee, onDone, onCancel }: Props) {
           {t('employee.form.runtime')}
           <select
             value={form.runtimeKind}
-            disabled={form.kind === 'manager'}
+            disabled={form.kind === 'manager' || assistant}
             onChange={(e) => setForm((f) => changeRuntime(f, e.target.value as RuntimeKind))}
           >
             {RUNTIMES.map((r) => (
@@ -220,7 +227,7 @@ export function EmployeeForm({ companyId, employee, onDone, onCancel }: Props) {
               </option>
             ))}
           </select>
-          {form.kind === 'manager' && (
+          {form.kind === 'manager' && !assistant && (
             <small className="muted">{t('employee.form.runtimeLocked')}</small>
           )}
         </label>
@@ -269,6 +276,7 @@ export function EmployeeForm({ companyId, employee, onDone, onCancel }: Props) {
             <input
               type="checkbox"
               checked={form.toolGrants.includes(tool.actionType)}
+              disabled={assistant}
               onChange={() => setForm((f) => toggleTool(f, tool.actionType))}
             />
             <span>
@@ -276,12 +284,18 @@ export function EmployeeForm({ companyId, employee, onDone, onCancel }: Props) {
             </span>
           </label>
         ))}
-        <small className="muted">{t('employee.form.toolsHint')}</small>
+        <small className="muted">
+          {assistant ? t('employee.form.assistantHint') : t('employee.form.toolsHint')}
+        </small>
       </fieldset>
 
       <label>
         {t('employee.form.manager')}
-        <select value={form.manager} onChange={(e) => update({ manager: e.target.value })}>
+        <select
+          value={form.manager}
+          disabled={assistant}
+          onChange={(e) => update({ manager: e.target.value })}
+        >
           <option value="">{t('employee.form.manager.pick')}</option>
           <optgroup label={t('employee.form.manager.humans')}>
             {(members.data ?? []).map((m) => (

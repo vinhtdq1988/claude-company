@@ -5,6 +5,7 @@ import type {
   ModelInfo,
   RoleTemplate,
   Workspace,
+  WorkspaceSettings,
 } from '@claude-company/contracts';
 import { api } from '../../lib/api';
 import { queryClient, queryKeys } from '../../lib/query';
@@ -42,6 +43,12 @@ export const useWorkspaces = (companyId: string) =>
   useQuery({
     queryKey: queryKeys.workspaces(companyId),
     queryFn: () => api.get<Workspace[]>(`/companies/${companyId}/workspaces`),
+  });
+
+export const useWorkspaceSettings = (companyId: string) =>
+  useQuery({
+    queryKey: queryKeys.workspaceSettings(companyId),
+    queryFn: () => api.get<WorkspaceSettings>(`/companies/${companyId}/workspaces/settings`),
   });
 
 /** Thay đổi nhân viên ảnh hưởng danh sách, hồ sơ và số nhân viên/team trong sơ đồ tổ chức. */

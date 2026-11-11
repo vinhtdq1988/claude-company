@@ -2,9 +2,15 @@ import { z } from 'zod';
 
 export const uuidSchema = z.string().uuid();
 
+/**
+ * Thao tác do CEO AI Assistant thực hiện thay mặt CEO (FR-050). Chỉ là chú thích audit: engine bỏ qua khi quyết định
+ * quyền, `TenantGuard` không bao giờ tạo và bỏ qua giá trị từ client; chỉ `company-ops` đặt từ dữ liệu của run.
+ */
+export type ActingVia = { employeeId: string; runId: string; taskId: string };
+
 /** Người thực hiện thao tác: người thật, AI Employee (kèm run) hoặc hệ thống (sweeper, bootstrap). */
 export type Actor =
-  | { kind: 'human'; memberId: string }
+  | { kind: 'human'; memberId: string; via?: ActingVia }
   | { kind: 'ai'; employeeId: string; runId: string }
   | { kind: 'system' };
 

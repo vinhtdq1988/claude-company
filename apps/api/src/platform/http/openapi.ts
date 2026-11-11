@@ -4,12 +4,14 @@ import {
   approvalDecisionSchema,
   approvalListQuerySchema,
   assignManagerSchema,
+  createAssistantRequestSchema,
   createCompanySchema,
   createEmployeeSchema,
   createOrgUnitSchema,
   createTaskSchema,
   createTeamSchema,
   createWorkspaceSchema,
+  updateWorkspaceSettingsSchema,
   dashboardQuerySchema,
   employeeFilterQuerySchema,
   ERROR_HTTP_STATUS,
@@ -19,6 +21,7 @@ import {
   runListQuerySchema,
   setTeamMembersSchema,
   taskDecisionSchema,
+  taskDraftPatchSchema,
   taskListQuerySchema,
   taskMessageBodySchema,
   taskTransitionSchema,
@@ -221,6 +224,19 @@ export const ROUTES: readonly RouteDoc[] = [
     summary: 'Đăng ký workspace',
     body: createWorkspaceSchema,
   },
+  {
+    method: 'get',
+    path: `${C}/workspaces/settings`,
+    tag: 'Employees',
+    summary: 'Thư mục gốc cho phép của workspace',
+  },
+  {
+    method: 'put',
+    path: `${C}/workspaces/settings`,
+    tag: 'Employees',
+    summary: 'Đặt thư mục gốc của workspace (chỉ CEO)',
+    body: updateWorkspaceSettingsSchema,
+  },
 
   // Tasks
   {
@@ -236,6 +252,13 @@ export const ROUTES: readonly RouteDoc[] = [
     path: `${C}/tasks/{id}`,
     tag: 'Tasks',
     summary: 'Chi tiết task, artifact, bằng chứng, review',
+  },
+  {
+    method: 'patch',
+    path: `${C}/tasks/{id}`,
+    tag: 'Tasks',
+    summary: 'Sửa task nháp (chỉ draft; chờ đề xuất của CEO AI Assistant thì 409 PROPOSAL_PENDING)',
+    body: taskDraftPatchSchema,
   },
   {
     method: 'post',
@@ -259,6 +282,12 @@ export const ROUTES: readonly RouteDoc[] = [
   },
   {
     method: 'get',
+    path: `${C}/tasks/{id}/operations`,
+    tag: 'Tasks',
+    summary: 'Thao tác điều hành của CEO AI Assistant trên task (trạng thái từng thao tác)',
+  },
+  {
+    method: 'get',
     path: `${C}/tasks/{id}/messages`,
     tag: 'Tasks',
     summary: 'Trao đổi gắn với task',
@@ -275,6 +304,21 @@ export const ROUTES: readonly RouteDoc[] = [
     path: `${C}/artifacts/{id}/content`,
     tag: 'Tasks',
     summary: 'Nội dung artifact',
+  },
+
+  // CEO AI Assistant (chỉ CEO)
+  {
+    method: 'get',
+    path: `${C}/ceo-assistant`,
+    tag: 'CEO AI Assistant',
+    summary: 'Trợ lý hiện có và khả năng tạo mới',
+  },
+  {
+    method: 'post',
+    path: `${C}/ceo-assistant/requests`,
+    tag: 'CEO AI Assistant',
+    summary: 'Gửi yêu cầu điều hành bằng ngôn ngữ tự nhiên (tạo task nháp chờ đề xuất)',
+    body: createAssistantRequestSchema,
   },
 
   // Approvals

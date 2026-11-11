@@ -1,5 +1,14 @@
 import { Global, Module } from '@nestjs/common';
-import { CONFIG, TOOL_ADAPTER_LOOKUP, type AppConfig } from '@claude-company/api';
+import { ModuleRef } from '@nestjs/core';
+import {
+  CONFIG,
+  EMPLOYEE_ENGINE,
+  ORGANIZATION_ENGINE,
+  TASK_ENGINE,
+  TOOL_ADAPTER_LOOKUP,
+  type AppConfig,
+} from '@claude-company/api';
+import type { EmployeeEngine, OrganizationEngine, TaskEngine } from '@claude-company/contracts';
 import { createAdapterRegistry } from './registry';
 
 /**
@@ -11,9 +20,18 @@ import { createAdapterRegistry } from './registry';
   providers: [
     {
       provide: TOOL_ADAPTER_LOOKUP,
-      inject: [CONFIG],
-      useFactory: (config: AppConfig) =>
-        createAdapterRegistry({ mode: config.ADAPTER_MODE, logDir: config.DRY_RUN_LOG_PATH }),
+      inject: [CONFIG, ModuleRef],
+      useFactory: (config: AppConfig, moduleRef: ModuleRef) =>
+        createAdapterRegistry({
+          mode: config.ADAPTER_MODE,
+          logDir: config.DRY_RUN_LOG_PATH,
+          // Engine lấy muộn: provider alias (`useExisting`) của engine chưa sẵn sàng lúc dựng registry.
+          internalEngines: () => ({
+            organization: moduleRef.get<OrganizationEngine>(ORGANIZATION_ENGINE, { strict: false }),
+            employees: moduleRef.get<EmployeeEngine>(EMPLOYEE_ENGINE, { strict: false }),
+            tasks: moduleRef.get<TaskEngine>(TASK_ENGINE, { strict: false }),
+          }),
+        }),
     },
   ],
   exports: [TOOL_ADAPTER_LOOKUP],

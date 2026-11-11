@@ -71,6 +71,50 @@ describe('placeZones (FR-034)', () => {
   });
 });
 
+describe('CEO Office cho nhân viên không có đơn vị nhà (CEO AI Assistant, FR-035)', () => {
+  it('layout ceo_office đủ ô cho số bàn (tối thiểu 1) và tất định', () => {
+    for (const desks of [0, 1, 4, 5, 13]) {
+      const [ceo] = placeZones([dept('dev', 2)], desks);
+      expect(ceo?.kind).toBe('ceo_office');
+      expect(ceo?.layout.rows).toBe(zoneRowsFor(desks));
+      expect(ceo?.layout.rows).toBeGreaterThanOrEqual(ZONE_MIN_ROWS);
+      for (let i = 0; i < Math.max(desks, 1); i += 1) {
+        const { col, row } = deskCell(ceo!.layout, i);
+        expect(col).toBeGreaterThanOrEqual(ceo!.layout.x);
+        expect(col).toBeLessThan(ceo!.layout.x + ceo!.layout.cols);
+        expect(row).toBeGreaterThanOrEqual(ceo!.layout.y);
+        expect(row).toBeLessThan(ceo!.layout.y + ceo!.layout.rows);
+      }
+    }
+    expect(placeZones([dept('dev', 2)], 3)).toEqual(placeZones([dept('dev', 2)], 3));
+  });
+
+  it('zone ceo_office cao thêm không làm các zone chồng nhau', () => {
+    const zones = placeZones([dept('a', 3), dept('b', 3), dept('c', 3)], 20);
+    for (const [i, a] of zones.entries()) {
+      for (const b of zones.slice(i + 1)) {
+        const overlap =
+          a.layout.x < b.layout.x + b.layout.cols &&
+          b.layout.x < a.layout.x + a.layout.cols &&
+          a.layout.y < b.layout.y + b.layout.rows &&
+          b.layout.y < a.layout.y + a.layout.rows;
+        expect(overlap, `${a.key} chồng ${b.key}`).toBe(false);
+      }
+    }
+  });
+
+  it('assignDesks đặt nhân viên không có đơn vị nhà ở nhóm null theo thứ tự tạo', () => {
+    const desks = assignDesks([
+      { id: '0003', homeOrgUnitId: null },
+      { id: '0001', homeOrgUnitId: 'dev' },
+      { id: '0002', homeOrgUnitId: null },
+    ]);
+    expect(desks.get('0002')).toEqual({ orgUnitId: null, deskIndex: 0 });
+    expect(desks.get('0003')).toEqual({ orgUnitId: null, deskIndex: 1 });
+    expect(desks.get('0001')).toEqual({ orgUnitId: 'dev', deskIndex: 0 });
+  });
+});
+
 describe('assignDesks', () => {
   it('bàn đánh số theo thứ tự tạo trong department "nhà", độc lập thứ tự đầu vào', () => {
     const list = [

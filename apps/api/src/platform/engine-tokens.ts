@@ -13,6 +13,11 @@ export const GAMIFICATION_ENGINE = Symbol('GAMIFICATION_ENGINE');
 export const OFFICE_SIMULATION_ENGINE = Symbol('OFFICE_SIMULATION_ENGINE');
 export const BUDGET_SERVICE = Symbol('BUDGET_SERVICE');
 export const MODEL_CATALOG = Symbol('MODEL_CATALOG');
+/**
+ * Đọc Company Dashboard (cùng service với `GET /dashboard`). Worker dùng cho tool `company.query` của CEO AI Assistant
+ * để số liệu trong báo cáo khớp Dashboard (SC-017).
+ */
+export const DASHBOARD_READER = Symbol('DASHBOARD_READER');
 
 /** `platform/auth` bind IdentityDirectory; engine khác hỏi thông tin user qua token này. */
 export const IDENTITY_DIRECTORY = Symbol('IDENTITY_DIRECTORY');

@@ -27,6 +27,8 @@ export const taskStatusEnum = pgEnum('task_status', [
   'blocked',
   'cancelled',
 ]);
+// Trạng thái đề xuất của task yêu cầu gửi CEO AI Assistant (FR-047); null với mọi task khác.
+export const taskProposalStatusEnum = pgEnum('task_proposal_status', ['pending', 'ready', 'failed']);
 export const taskPriorityEnum = pgEnum('task_priority', ['low', 'medium', 'high', 'urgent']);
 export const taskAssigneeKindEnum = pgEnum('task_assignee_kind', [
   'ai_employee',
@@ -81,6 +83,7 @@ export const task = pgTable(
     decompositionPlan: jsonb('decomposition_plan').$type<DecompositionPlan>(),
     decomposedByEmployeeId: uuid('decomposed_by_employee_id'),
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    proposalStatus: taskProposalStatusEnum('proposal_status'),
   },
   (t) => [
     check('task_rework_count_nonneg', sql`${t.reworkCount} >= 0`),

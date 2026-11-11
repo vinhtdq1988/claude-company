@@ -37,9 +37,17 @@ import type {
   EmployeeProfile,
   EmployeeProfileInput,
   ModelInfo,
+  RoleTemplate,
   Workspace,
 } from './employee';
-import type { ConcurrencyLimit, LimitRef, UsageRecordInput, UsageSummary } from './budget';
+import type {
+  BudgetPolicy,
+  BudgetScopeKind,
+  ConcurrencyLimit,
+  LimitRef,
+  UsageRecordInput,
+  UsageSummary,
+} from './budget';
 import type {
   Company,
   OrgChart,
@@ -60,6 +68,9 @@ import type {
   Artifact,
   ArtifactInput,
   DecompositionPlan,
+  TaskDraftPatch,
+  TaskOperation,
+  TaskProposal,
   EvidenceInput,
   Notification,
   ReviewResult,
@@ -130,11 +141,38 @@ export interface EmployeeEngine {
   deactivateHumanMember(ctx: RequestContext, memberId: string): Promise<void>;
   /** Workspace được đăng ký của công ty (worker dùng để dựng thư mục làm việc của run). */
   getWorkspace(ctx: RequestContext, id: string): Promise<Workspace>;
+  /** Thư mục gốc cho phép của workspace theo công ty (cài đặt của CEO, hoặc mặc định theo cấu hình). */
+  getWorkspaceRoot(ctx: RequestContext): Promise<string>;
+  /** Mẫu vai trò (dữ liệu seed toàn cục): `employee.create` của CEO AI Assistant lấy model, công cụ, prompt từ mẫu. */
+  listRoleTemplates(): Promise<RoleTemplate[]>;
+  /** CEO AI Assistant chưa lưu trữ của công ty (kể cả `suspended`), hoặc `null`. Chỉ CEO gọi được (FR-046). */
+  getCeoAssistant(ctx: RequestContext): Promise<EmployeeProfile | null>;
+  /**
+   * Tạo AI Manager mặc định (mẫu `ai_manager`) cho team chưa có AI Manager và thêm vào team. Người thật quản lý
+   * team (hoặc CEO) là manager trực tiếp. Một AI Manager có thể thuộc nhiều team nên chỉ gọi khi team chưa có.
+   */
+  provisionTeamManager(
+    ctx: RequestContext,
+    input: { teamId: string; teamName: string; orgUnitId: string; humanManagerId: string | null },
+  ): Promise<EmployeeProfile>;
 }
 
 export interface TaskEngine {
   /** @throws DomainError TASK_FIELDS_REQUIRED, ASSIGNEE_OUT_OF_SCOPE, DEPENDENCY_CYCLE */
   create(ctx: RequestContext, input: TaskInput): Promise<Task>;
+  /**
+   * Chỉ task `draft` (FR-047): sửa title, objective, deadline, priority, acceptanceCriteria, expectedOutput, tokenCap,
+   * costCap. `ctx.actor` là người dùng thì bị chặn khi `proposal_status = pending`; run `propose` của trợ lý được phép.
+   * `meta.proposalStatus` chỉ nhận từ `ctx.actor.kind = ai|system` (Orchestration Engine ghi kết quả run `propose`):
+   * `ready` đi kèm đề xuất, `failed` cho phép `patch` rỗng. Phát `task.proposal_applied { taskId, status }`.
+   * @throws DomainError TASK_NOT_DRAFT, PROPOSAL_PENDING, TASK_FIELDS_REQUIRED
+   */
+  updateDraft(
+    ctx: RequestContext,
+    taskId: string,
+    patch: TaskDraftPatch | Record<string, never>,
+    meta?: { proposalStatus: 'ready' | 'failed' },
+  ): Promise<Task>;
   /**
    * Máy trạng thái FR-020a duy nhất. `meta.blockedReason` bắt buộc khi `block`.
    * @throws DomainError TASK_INVALID_TRANSITION, SUBTASK_CANCELLED, EMPLOYEE_SUSPENDED
@@ -192,7 +230,7 @@ export interface OrchestrationEngine {
   enqueueRun(
     ctx: RequestContext,
     taskId: string,
-    purpose: 'execute' | 'decompose' | 'review' | 'synthesize',
+    purpose: 'execute' | 'decompose' | 'review' | 'synthesize' | 'propose',
   ): Promise<AgentRunRef>;
   /** Tạo lần thử kế tiếp (retry) của một run đã lỗi tạm thời, sau `delayMs`. */
   enqueueRetry(ctx: RequestContext, runId: string, delayMs: number): Promise<AgentRunRef>;
@@ -210,6 +248,21 @@ export interface OrchestrationEngine {
   getRun(ctx: RequestContext, runId: string): Promise<AgentRunDetail>;
   listRuns(ctx: RequestContext, filter: RunListFilter): Promise<Page<AgentRunSummary>>;
   listExecutedActions(ctx: RequestContext, taskId: string): Promise<ExecutedAction[]>;
+  /**
+   * Thao tác điều hành của CEO AI Assistant trên task (ghép `tool_invocation`, `approval_request`, `run_step` của các run
+   * do `ceo_assistant` chạy); task khác trả `[]`.
+   */
+  listOperations(ctx: RequestContext, taskId: string): Promise<TaskOperation[]>;
+  /**
+   * Kết quả job `task.propose` (US9): kiểm tra `TaskProposal` (≥ 1 tiêu chí, deadline trong tương lai, priority hợp lệ)
+   * rồi ghi đè task `draft` qua `TaskEngine.updateDraft` và đặt `proposal_status = ready`; sai hoặc hết retry → `failed`.
+   * Không đổi trạng thái task.
+   */
+  applyTaskProposal(
+    ctx: RequestContext,
+    taskId: string,
+    proposal: TaskProposal | { failed: true; reason: string },
+  ): Promise<void>;
   recoverStaleRuns(): Promise<RecoveryReport>;
   /**
    * Kết quả job `task.decompose`: áp kế hoạch qua TaskEngine; kế hoạch sai (`DEPENDENCY_CYCLE`,
@@ -301,10 +354,12 @@ export interface BudgetService {
    */
   allowedModelsFor(
     ctx: RequestContext,
-    target: { homeOrgUnitId: string; teamIds?: string[]; employeeId?: string },
+    target: { homeOrgUnitId: string | null; teamIds?: string[]; employeeId?: string },
   ): Promise<string[] | null>;
   /** Giới hạn `max_concurrent_tasks` của scope company, org_unit (cả tổ tiên), team áp dụng cho nhân viên. */
   getConcurrencyLimits(ctx: RequestContext, employeeId: string): Promise<ConcurrencyLimit[]>;
+  /** Chính sách ngân sách của một phạm vi (công ty chưa có bản ghi thì trả hạn mức mặc định đang áp dụng). */
+  getPolicy(ctx: RequestContext, scopeKind: BudgetScopeKind, scopeId: string): Promise<BudgetPolicy>;
   getUsage(
     ctx: RequestContext,
     filter: {
@@ -389,10 +444,32 @@ export interface GamificationEngine {
   list(ctx: RequestContext): Promise<Milestone[]>;
 }
 
+/**
+ * Ngữ cảnh một lần thực thi/tra cứu hành động đã duyệt. Adapter ra bên ngoài bỏ qua; `InternalOpsAdapter` cần để dựng
+ * ngữ cảnh của người duyệt kèm `via` và để tra trạng thái đối tượng khi recovery.
+ */
+export type AdapterContext = {
+  companyId: string;
+  traceId: string;
+  actionType: string;
+  /** Người duyệt (`approval_request.decided_by`): ngữ cảnh thực thi của adapter nội bộ. */
+  approverMemberId?: string;
+  employeeId?: string;
+  runId?: string;
+  taskId?: string;
+};
+
 export interface ToolAdapter {
   actionTypes: string[];
-  mode: 'dry_run' | 'live';
-  execute(input: unknown, idempotencyKey: string): Promise<ToolResult>;
-  /** Dùng bởi recovery: trạng thái của lần thực thi với key này. */
-  lookup(idempotencyKey: string): Promise<'succeeded' | 'failed' | 'not_found' | 'unknown'>;
+  /** `internal`: InternalOpsAdapter cho org.archive, employee.archive, task.cancel (dữ liệu của chính ứng dụng). */
+  mode: 'dry_run' | 'live' | 'internal';
+  execute(input: unknown, idempotencyKey: string, context?: AdapterContext): Promise<ToolResult>;
+  /**
+   * Dùng bởi recovery: trạng thái của lần thực thi với key này. `context.input` là payload đã ghi ledger để adapter
+   * nội bộ đối chiếu trạng thái đối tượng.
+   */
+  lookup(
+    idempotencyKey: string,
+    context?: AdapterContext & { input?: unknown },
+  ): Promise<'succeeded' | 'failed' | 'not_found' | 'unknown'>;
 }

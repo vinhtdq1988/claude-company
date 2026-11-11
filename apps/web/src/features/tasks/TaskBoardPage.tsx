@@ -22,8 +22,8 @@ export function useAssigneeLookup(companyId: string) {
   const employees = useEmployees(companyId);
   const chart = useOrgChart(companyId);
   const units = flattenUnits(chart.data?.roots ?? []);
-  const unitName = (id: string, tree?: OrgChart) =>
-    (tree ? findUnit(tree, id)?.name : undefined) ?? '—';
+  const unitName = (id: string | null, tree?: OrgChart) =>
+    (tree && id ? findUnit(tree, id)?.name : undefined) ?? '—';
   return (task: Pick<Task, 'assigneeKind' | 'assigneeId'>): { assignee: string; unit: string } => {
     if (task.assigneeKind === 'ai_employee') {
       const employee = employees.data?.find((e) => e.id === task.assigneeId);
@@ -194,6 +194,9 @@ export function TaskBoardPage({ companyId, onOpen, onNew }: Props) {
                         </span>
                         {task.isOverdue && (
                           <span className="badge badge-danger">{t('tasks.card.overdue')}</span>
+                        )}
+                        {task.assignedByEmployee && (
+                          <span className="badge">{t('assistant.createdBy')}</span>
                         )}
                       </div>
                       <dl className="task-facts">

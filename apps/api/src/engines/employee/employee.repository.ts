@@ -5,6 +5,7 @@ import {
   humanMember,
   roleTemplate,
   workspace,
+  workspaceSetting,
 } from '@claude-company/db/schema/employee';
 import { and, asc, eq, inArray, isNull, ne } from 'drizzle-orm';
 
@@ -12,6 +13,7 @@ export type EmployeeRow = typeof aiEmployee.$inferSelect;
 export type NewEmployeeRow = typeof aiEmployee.$inferInsert;
 export type HumanMemberRow = typeof humanMember.$inferSelect;
 export type WorkspaceRow = typeof workspace.$inferSelect;
+export type WorkspaceSettingRow = typeof workspaceSetting.$inferSelect;
 export type RoleTemplateRow = typeof roleTemplate.$inferSelect;
 
 /** Mã lỗi PostgreSQL vi phạm ràng buộc UNIQUE. */
@@ -53,6 +55,21 @@ export class EmployeeRepository {
       .select()
       .from(aiEmployee)
       .where(and(eq(aiEmployee.companyId, companyId), eq(aiEmployee.id, id)));
+    return row;
+  }
+
+  /** CEO AI Assistant chưa lưu trữ của công ty (kể cả `suspended`), nếu có. */
+  async findCeoAssistant(tx: Tx, companyId: string): Promise<EmployeeRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(aiEmployee)
+      .where(
+        and(
+          eq(aiEmployee.companyId, companyId),
+          eq(aiEmployee.roleTemplateKey, 'ceo_assistant'),
+          ne(aiEmployee.status, 'archived'),
+        ),
+      );
     return row;
   }
 
@@ -154,6 +171,28 @@ export class EmployeeRepository {
       .from(workspace)
       .where(and(eq(workspace.companyId, companyId), eq(workspace.id, id)));
     return row;
+  }
+
+  async findWorkspaceSetting(tx: Tx, companyId: string): Promise<WorkspaceSettingRow | undefined> {
+    const [row] = await tx
+      .select()
+      .from(workspaceSetting)
+      .where(eq(workspaceSetting.companyId, companyId));
+    return row;
+  }
+
+  async upsertWorkspaceSetting(tx: Tx, companyId: string, rootPath: string): Promise<void> {
+    await tx
+      .insert(workspaceSetting)
+      .values({ companyId, rootPath })
+      .onConflictDoUpdate({
+        target: workspaceSetting.companyId,
+        set: { rootPath, updatedAt: new Date() },
+      });
+  }
+
+  async deleteWorkspaceSetting(tx: Tx, companyId: string): Promise<void> {
+    await tx.delete(workspaceSetting).where(eq(workspaceSetting.companyId, companyId));
   }
 
   // --- role_template (bảng toàn cục, không RLS) ---

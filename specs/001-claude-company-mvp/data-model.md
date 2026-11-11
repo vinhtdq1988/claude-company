@@ -8,7 +8,7 @@ Quy ước chung cho mọi bảng nghiệp vụ:
 - Row-Level Security: `company_id = NULLIF(current_setting('app.company_id', true), '')::uuid`, chưa đặt biến thì không có dòng nào khớp (xem research R2). `human_member` và `company` có thêm policy theo `app.user_id` cho `/auth/me` và `createCompany`. Worker lấy danh sách công ty qua hàm `SECURITY DEFINER` chỉ trả `company_id`, mỗi hàm chỉ đọc bảng của một engine; role ứng dụng không có `BYPASSRLS`.
 - Không xóa cứng đơn vị/nhân viên đã có lịch sử: dùng `archived_at` (edge case "lưu trữ thay vì xóa mất").
 - Mỗi bảng thuộc đúng một engine hoặc module platform (cột **Engine**); engine khác chỉ truy cập qua interface trong [contracts/engine-interfaces.md](./contracts/engine-interfaces.md).
-- Ánh xạ thuật ngữ spec → dữ liệu: Blocked/Error của task = `blocked`; Error/Blocked của nhân viên = `error_blocked`; Division/Department = `org_unit`; "xóa" đơn vị hoặc nhân viên = archive; "worktree của run" = thư mục làm việc riêng `/worktrees/{runId}`.
+- Ánh xạ thuật ngữ spec → dữ liệu: Blocked/Error của task = `blocked`; Error/Blocked của nhân viên = `error_blocked`; Division/Department = `org_unit`; "xóa" đơn vị hoặc nhân viên = archive; "worktree của run" = thư mục làm việc riêng `/worktrees/{runId}`; CEO AI Assistant = `ai_employee` có `role_template_key = 'ceo_assistant'` (không có bảng riêng, chỉ ràng buộc thêm).
 
 ## Sơ đồ quan hệ (rút gọn)
 
@@ -94,9 +94,9 @@ Phạm vi quản lý của một human_member = các target được gán + mọ
 | name | text | 1–80 |
 | avatar_key | text | sprite trong bộ tài sản office |
 | position | text | chức danh |
-| home_org_unit_id | uuid → org_unit | department (zone trong office) |
+| home_org_unit_id | uuid? → org_unit | department (zone trong office). NOT NULL, ngoại lệ duy nhất là `role_template_key = 'ceo_assistant'` (cấp công ty, hiển thị ở zone `ceo_office`): `CHECK (home_org_unit_id IS NOT NULL OR role_template_key = 'ceo_assistant')` |
 | kind | enum `employee`,`manager` | AI Manager vs AI Employee (FR-011) |
-| role_template_key | text? | `ai_developer`,`ai_ba`,`ai_qa`,`ai_manager` hoặc null (tùy chỉnh) |
+| role_template_key | text? | `ai_developer`,`ai_ba`,`ai_qa`,`ai_manager`,`ceo_assistant` hoặc null (tùy chỉnh) |
 | personality | text | |
 | skills | text[] | |
 | seniority | enum `junior`,`middle`,`senior`,`expert` | |
@@ -114,8 +114,18 @@ Validation chuỗi quản lý (FR-006): đi theo `manager_id` khi `manager_kind 
 
 Xóa/archive (US2-AS4): bị chặn nếu còn task chưa kết thúc được giao cho nhân viên; API trả danh sách task cần hủy hoặc chờ hoàn tất.
 
+Ràng buộc riêng của CEO AI Assistant (FR-046, FR-011, FR-050):
+
+- Duy nhất: `CREATE UNIQUE INDEX ai_employee_one_ceo_assistant ON ai_employee (company_id) WHERE role_template_key = 'ceo_assistant' AND status <> 'archived'` → tạo thêm khi còn trợ lý chưa lưu trữ trả `409 CEO_ASSISTANT_EXISTS` (kể cả trợ lý đang `suspended`).
+- `kind = 'employee'` (không phải AI Manager), `runtime_kind = 'messages_api'`, `home_org_unit_id` rỗng, `manager_kind = 'human'` và `manager_id` là `human_member` có `role = 'ceo'`. `EmployeeEngine` ép các giá trị này khi tạo và từ chối (`422 VALIDATION_FAILED`) mọi `PATCH` đổi `kind`, `runtimeKind`, `manager`, `homeOrgUnitId` của trợ lý; `deactivateHumanMember` của CEO vẫn bị chặn bởi quy tắc chuỗi quản lý.
+- `tool_grants` chỉ nhận `ActionType` mà [action-policy.md](./contracts/action-policy.md) cho phép với trợ lý (không có `workspace.*`, không có `ActionType` `restricted`); `PATCH` thêm tool ngoài danh sách → `422`.
+- Chỉ CEO thấy, sửa, tạm ngưng, lưu trữ trợ lý (nhân viên không có đơn vị nhà nên không rơi vào `ManagedScope` của Manager thường).
+- Phạm vi thống kê: trợ lý không có đơn vị nhà nên chỉ nằm trong tổng toàn công ty; `usage_ledger.org_unit_id` và bộ lọc theo `orgUnitId` bỏ qua dòng của trợ lý (null).
+
+AI Manager do hệ thống tạo cho Team (FR-016a): bản ghi `ai_employee` bình thường (`kind = manager`, `role_template_key = ai_manager`, tên `AI Manager {tên Team}`, `home_org_unit_id` là phòng ban chứa Team, `manager_kind = human` trỏ tới người quản lý Team hoặc CEO) cùng một dòng `team_membership`. Không có cột đánh dấu "tự tạo"; truy vết qua `domain_event` `employee.created` có `actor.kind = system`.
+
 ### role_template (seed)
-`key`, `name`, `defaults jsonb` (position, skills, seniority, runtime_kind, system_prompt, tool_grants, model_id gợi ý).
+`key`, `name`, `defaults jsonb` (position, skills, seniority, runtime_kind, system_prompt, tool_grants, model_id gợi ý). Seed gồm `ai_developer`, `ai_ba`, `ai_qa`, `ai_manager`, `ceo_assistant`. Mẫu `ceo_assistant`: `kind = employee`, `runtime_kind = messages_api`, `tool_grants` mặc định theo R14 Decision 1, `system_prompt` nêu rõ ranh giới (chỉ báo cáo từ dữ liệu `company.query`; việc quyết định của con người phải nhờ CEO; hỏi lại khi yêu cầu chưa rõ thay vì đoán – US9-AS8).
 
 ### workspace
 `name`, `kind` enum `git_repo`,`docs_folder`, `mount_path`, `default_branch?`. Chỉ CEO đăng ký.
@@ -129,7 +139,8 @@ Xóa/archive (US2-AS4): bị chặn nếu còn task chưa kết thúc được g
 | title | text | |
 | objective | text | bắt buộc |
 | created_by_member_id | uuid → human_member | người thật giao việc và chịu trách nhiệm; task con kế thừa từ task cha |
-| assigned_by_ai_employee_id | uuid? → ai_employee | AI Manager đã tạo task con (SC-014) |
+| assigned_by_ai_employee_id | uuid? → ai_employee | AI Employee đã tạo task thay người giao: AI Manager khi tạo task con, hoặc CEO AI Assistant khi giao việc thay mặt CEO (SC-014, FR-051); `created_by_member_id` vẫn là người thật chịu trách nhiệm |
+| proposal_status | enum? `pending`,`ready`,`failed` | chỉ dùng cho task yêu cầu gửi trợ lý (FR-047): `pending` từ lúc tạo đến khi run `propose` xong; null với mọi task khác. `pending` thì `assign` và `PATCH` bị chặn `409 PROPOSAL_PENDING` |
 | assignee_kind | enum `ai_employee`,`team`,`org_unit` | |
 | assignee_id | uuid | phải trong phạm vi quản lý của người giao (US3-AS6) |
 | deadline | timestamptz | bắt buộc |
@@ -160,12 +171,13 @@ Quy tắc bổ sung:
 - `awaiting_human_approval → completed` chỉ qua `review_record.decision = approve` của human_member có quyền review task đó.
 - Task giao cho team/org_unit: `assigned` → job decompose; áp dụng kế hoạch phân rã thì task cha `start` sang `in_progress`; mọi task con `completed` thì task cha `submit` sang `in_review`. Task cha chỉ `completed` qua Human Approval của chính nó. Kế hoạch `mode = confirm` hoặc không có task con cho task loại này → `blocked`, `blocked_reason = NO_SUITABLE_ASSIGNEE`.
 - Mỗi task con đi đủ vòng đời, kể cả Human Approval; task phụ thuộc chỉ bắt đầu khi task nó phụ thuộc đã `completed`.
-- AI Manager phụ trách phân rã (FR-016a): AI Manager thuộc team được giao → AI Manager có `home_org_unit_id` là đơn vị đó (task giao team: department chứa team); nhiều AI Manager cùng bậc thì lấy `id` nhỏ nhất; không có → `blocked`, `blocked_reason = NO_AI_MANAGER`.
+- AI Manager phụ trách phân rã (FR-016a): AI Manager thuộc team được giao → AI Manager có `home_org_unit_id` là đơn vị đó (task giao team: department chứa team); nhiều AI Manager cùng bậc thì lấy `id` nhỏ nhất; task giao Team mà vẫn không có thì hệ thống tự tạo AI Manager cho Team (`provisionTeamManager`, xem mục `ai_employee`) rồi dùng AI Manager đó; chỉ khi không tạo được → `blocked`, `blocked_reason = NO_AI_MANAGER`. Một AI Manager có thể thuộc nhiều Team nên AI Manager đã có ở Team khác vẫn được dùng nếu thuộc đúng Team được giao.
 - Task giao trực tiếp cho `ai_employee`: `assigned` → job decompose do AI Manager chọn theo FR-018 (nhân viên được giao là AI Manager thì tự đảm nhiệm). `mode = confirm` thì giữ assignee và chờ slot để `start`; `mode = decompose` thì đi như task cha; không có AI Manager → `blocked`, `blocked_reason = NO_AI_MANAGER`.
 - Task con kế thừa `deadline`, `priority`, `created_by_member_id` từ task cha.
 - Reviewer AI (FR-018): manager AI trực tiếp → AI Manager cùng `home_org_unit_id` → AI Manager bất kỳ đang `active` trong công ty, luôn khác người thực thi; không có → `blocked`, `blocked_reason = NO_INDEPENDENT_REVIEWER`, notification `escalation`.
 - Nhân viên `suspended`: không bắt đầu run mới; run đang chạy bị khóa tool, task sang `blocked`, `blocked_reason = EMPLOYEE_SUSPENDED`; task đang chờ slot giữ `assigned`. Khi nhân viên hoạt động lại (`employee.resumed`), task chờ slot được lấy theo priority rồi deadline. `resume` task có assignee còn `suspended` trả `409 EMPLOYEE_SUSPENDED`.
 - Task giao trực tiếp cho AI Employee mà nhân viên hết slot: giữ `assigned`, xếp hàng theo priority rồi deadline (US2-AS5).
+- Task của CEO AI Assistant (US9): assignee là trợ lý (`assignee_kind = ai_employee`) và đi đúng vòng đời FR-020a. (1) Tạo ở `draft` với `proposal_status = pending`; run `propose` điền các trường qua `TaskEngine.updateDraft` rồi `proposal_status = ready` hoặc `failed` (CEO sửa tay được trong cả hai trường hợp). (2) `draft` chỉ sửa được bằng `PATCH` (title, objective, deadline, priority, acceptance_criteria, expected_output, token_cap, cost_cap), mọi trạng thái khác `409 TASK_NOT_DRAFT`. (3) Job decompose chỉ chấp nhận `mode = confirm` (xem research R10); `decompose` → `blocked`, `NO_SUITABLE_ASSIGNEE`. (4) Reviewer luôn là AI Manager khác trợ lý theo FR-018; trợ lý không bao giờ là reviewer vì `kind = employee`. (5) Các task mà trợ lý tạo thay CEO (`assigned_by_ai_employee_id = trợ lý`) là task gốc độc lập có `created_by_member_id = CEO`; chúng ở `draft` hoặc `assigned` tùy nguồn tiêu chí (research R14 Decision 6), và không phải task con của task yêu cầu (không có `parent_task_id`) nên Dashboard đếm chúng như task gốc bình thường. (6) Hủy task yêu cầu của trợ lý không tự hủy các task trợ lý đã tạo; CEO hủy từng task qua luồng thường.
 - Cột phụ: `blocked_from` (enum trạng thái).
 - `reject` của Human Manager: ghi `review_record`, task sang `blocked`, `blocked_from = in_progress`, `blocked_reason = HUMAN_REJECTED`, tăng `rework_count`. `resume` tạo run `execute` mới nhận lý do từ chối; kết quả đã bị từ chối không approve lại được.
 - `rework` làm `rework_count - rework_baseline ≥ max_rework`: task sang `blocked`, `blocked_from = in_progress`, `blocked_reason = MAX_REWORK_REACHED`, notification `escalation`. `reject` chạm ngưỡng này vẫn giữ `HUMAN_REJECTED` và không gửi `escalation`, vì người quyết định đã là người thật. Mọi `resume` lúc đã đạt ngưỡng đều đặt `rework_baseline = rework_count`.
@@ -195,7 +207,7 @@ Quy tắc bổ sung:
 |---|---|---|
 | task_id | uuid | |
 | ai_employee_id | uuid | |
-| purpose | enum `execute`,`decompose`,`review`,`synthesize` | run `decompose`, `review`, `synthesize` không chiếm slot `max_concurrent_tasks` |
+| purpose | enum `execute`,`decompose`,`review`,`synthesize`,`propose` | run `decompose`, `review`, `synthesize`, `propose` không chiếm slot `max_concurrent_tasks`. `propose`: chỉ CEO AI Assistant, chỉ trên task `draft` có `proposal_status = pending`, structured output, không có tool |
 | attempt | int | lần thử (retry) |
 | status | enum `queued`,`running`,`waiting_approval`,`succeeded`,`failed`,`timed_out`,`cancelled` | |
 | runtime_kind, model_id | | ảnh chụp tại thời điểm chạy (đổi model không ảnh hưởng lịch sử – US2-AS3) |
@@ -218,8 +230,9 @@ Quy tắc bổ sung:
 | input_hash | text | sha256 |
 | idempotency_key | text | UNIQUE; công thức theo nhóm `dedupe`/`rerun` trong [action-policy.md](./contracts/action-policy.md) |
 | status | enum `denied`,`pending_approval`,`pending`,`executing`,`succeeded`,`failed`,`unknown` | `unknown` → Blocked, người thật quyết |
-| adapter_mode | enum `dry_run`,`live`? | |
-| result | jsonb? | |
+| adapter_mode | enum `dry_run`,`live`,`internal`? | `internal`: thao tác trên dữ liệu của chính ứng dụng do CEO AI Assistant đề xuất (lưu trữ đơn vị/nhân viên, hủy task) sau khi được duyệt; chỉ `dry_run` mới hiện nhãn "dry-run" trên giao diện || result | jsonb? | |
+
+Dấu "thay mặt CEO" (FR-051) không cần cột riêng: một `tool_invocation` là hành động của CEO AI Assistant khi `agent_run.ai_employee_id` trỏ tới nhân viên có `role_template_key = 'ceo_assistant'`. Yêu cầu nguồn = `agent_run.task_id` (task yêu cầu, có `objective` là lời CEO); mức quyền = `permission_level`; kết quả = `status` + `result`; thời điểm = `run_step`. Giao diện lịch sử thực thi và `GET /tasks/{id}/operations` ghép các trường này.
 
 ### run_conversation_state
 `agent_run_id` (UNIQUE), `messages jsonb`, `updated_at`. Chỉ dùng cho runtime `messages_api`: lưu hội thoại khi run tạm dừng chờ duyệt để resume, kể cả sau khi worker restart. Không chứa credential vì credential không bao giờ đi vào ngữ cảnh model.
@@ -251,7 +264,7 @@ Quy tắc bổ sung:
 `scope_kind`, `scope_id`, `monthly_token_limit?`, `monthly_cost_limit?` (numeric, USD), `max_concurrent_tasks?`, `allowed_models text[]?`, `warn_threshold` (mặc định 0.8). UNIQUE(scope_kind, scope_id). `max_concurrent_tasks` chỉ dùng cho scope company, org_unit, team; giới hạn của từng nhân viên lưu ở `ai_employee.max_concurrent_tasks`. Công ty không có bản ghi thì áp hạn mức mặc định từ cấu hình, không bao giờ coi là không giới hạn.
 
 ### usage_ledger (chỉ INSERT)
-`agent_run_id`, `task_id`, `ai_employee_id`, `org_unit_id` (ảnh chụp), `team_ids uuid[]`, `model_id`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd numeric(12,6)`, `period char(7)` (`YYYY-MM` theo timezone công ty), `provider_message_id` (UNIQUE – chống đếm trùng), `is_overage bool`.
+`agent_run_id`, `task_id`, `ai_employee_id`, `org_unit_id` (ảnh chụp; null với CEO AI Assistant), `team_ids uuid[]`, `model_id`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `cost_usd numeric(12,6)`, `period char(7)` (`YYYY-MM` theo timezone công ty), `provider_message_id` (UNIQUE – chống đếm trùng), `is_overage bool`.
 
 ### budget_reservation
 `agent_run_id`, `scopes jsonb`, `reserved_tokens`, `reserved_cost`, `status` enum `held`,`committed`,`released`. Tổng đã dùng + đang giữ không vượt giới hạn. Runtime `claude_agent_sdk` giữ một reservation `held` trong lúc run chạy; run chết thì sweeper release. Khi run chuyển `waiting_approval`, phần đang giữ được release; lúc resume reserve lại, không đủ thì task `blocked`.
@@ -265,7 +278,7 @@ Quy tắc bổ sung:
 ## Platform: Events
 
 ### domain_event (outbox)
-`seq bigint` (tăng dần theo company), `type` (xem [realtime-events.md](./contracts/realtime-events.md)), `aggregate_kind`, `aggregate_id`, `payload jsonb`, `occurred_at`, `published_at?`.
+`seq bigint` (tăng dần theo company), `type` (xem [realtime-events.md](./contracts/realtime-events.md)), `aggregate_kind`, `aggregate_id`, `payload jsonb`, `occurred_at`, `published_at?`. Thay đổi do CEO AI Assistant thực hiện thay mặt CEO mang `payload.actingVia = { employeeId, runId, taskId }` (FR-051); sự kiện của thao tác người dùng thường không có trường này.
 
 ## Office Simulation Engine
 
@@ -283,7 +296,7 @@ Cột bổ sung (T151): `suspended boolean` (nhân viên đang tạm ngưng → 
 `company_id` PK, `applied_seq`: projection đã gấp mọi `domain_event` có `seq <= applied_seq`. `GET /office/snapshot` trả đúng mốc này.
 
 ### office_zone
-`kind` enum `department`,`ceo_office`,`break_room`, `org_unit_id?`, `name`, `layout jsonb` (`{x, y, cols, rows}` trên lưới ô, sinh tất định). Tạo/cập nhật tự động khi department hoặc nhân viên thay đổi. Chỉ department có zone; division chỉ có zone khi có nhân viên "nhà" trực tiếp. UNIQUE(`company_id`, `org_unit_id`) và mỗi công ty đúng một `ceo_office`, một `break_room`.
+`kind` enum `department`,`ceo_office`,`break_room`, `org_unit_id?`, `name`, `layout jsonb` (`{x, y, cols, rows}` trên lưới ô, sinh tất định). Nhân viên có `home_org_unit_id` rỗng (CEO AI Assistant, FR-035) được đặt ở zone `ceo_office`, `deskIndex` theo thứ tự tạo như các zone khác; layout `ceo_office` dựng đủ ô cho số bàn này (tối thiểu 1). Tạo/cập nhật tự động khi department hoặc nhân viên thay đổi. Chỉ department có zone; division chỉ có zone khi có nhân viên "nhà" trực tiếp. UNIQUE(`company_id`, `org_unit_id`) và mỗi công ty đúng một `ceo_office`, một `break_room`.
 
 ## Communication Engine
 

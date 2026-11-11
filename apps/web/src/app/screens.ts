@@ -10,6 +10,8 @@ export type Screen = {
   path: string;
   labelKey: MessageKey;
   module: string;
+  /** Chỉ CEO thấy mục điều hướng (server vẫn cưỡng chế quyền, đây chỉ là gợi ý giao diện). */
+  ceoOnly?: boolean;
 };
 
 export const COMPANY_SCREENS: readonly Screen[] = [
@@ -18,6 +20,12 @@ export const COMPANY_SCREENS: readonly Screen[] = [
   { path: 'employees', labelKey: 'nav.employees', module: 'features/employees/EmployeesPage' },
   { path: 'workspaces', labelKey: 'nav.workspaces', module: 'features/employees/WorkspacesPage' },
   { path: 'tasks', labelKey: 'nav.tasks', module: 'features/tasks/TaskCenterPage' },
+  {
+    path: 'assistant',
+    labelKey: 'nav.assistant',
+    module: 'features/assistant/AssistantPage',
+    ceoOnly: true,
+  },
   { path: 'approvals', labelKey: 'nav.approvals', module: 'features/approvals/ApprovalsPage' },
   { path: 'office', labelKey: 'nav.office', module: 'office/VirtualOfficePage' },
   { path: 'dashboard', labelKey: 'nav.dashboard', module: 'features/dashboard/DashboardPage' },

@@ -9,6 +9,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
 import { baseColumns, createdAtColumn, idColumn, updatedAtColumn } from './_columns';
@@ -54,6 +55,19 @@ export const workspace = pgTable(
   ],
 );
 
+/** Thư mục gốc cho phép của workspace do CEO đặt theo công ty; không có dòng thì dùng `WORKSPACE_HOST_PATH`. */
+export const workspaceSetting = pgTable(
+  'workspace_setting',
+  {
+    ...baseColumns(),
+    rootPath: text('root_path').notNull(),
+  },
+  (t) => [
+    unique('workspace_setting_company_unique').on(t.companyId),
+    check('workspace_setting_root_length', sql`char_length(${t.rootPath}) between 1 and 512`),
+  ],
+);
+
 /**
  * Hồ sơ AI Employee (FR-009). `manager_id` là nguồn sự thật duy nhất về manager trực tiếp:
  * trỏ `human_member` hoặc `ai_employee` tùy `manager_kind` nên không có khóa ngoại.
@@ -65,9 +79,8 @@ export const aiEmployee = pgTable(
     name: text('name').notNull(),
     avatarKey: text('avatar_key').notNull(),
     position: text('position').notNull(),
-    homeOrgUnitId: uuid('home_org_unit_id')
-      .notNull()
-      .references(() => orgUnit.id),
+    // NOT NULL, ngoại lệ duy nhất là CEO AI Assistant (CHECK bên dưới): trợ lý cấp công ty nên không thuộc đơn vị nào.
+    homeOrgUnitId: uuid('home_org_unit_id').references(() => orgUnit.id),
     kind: employeeKindEnum('kind').notNull(),
     roleTemplateKey: text('role_template_key'),
     personality: text('personality').notNull().default(''),
@@ -97,6 +110,14 @@ export const aiEmployee = pgTable(
       'ai_employee_manager_runtime',
       sql`${t.kind} <> 'manager' or ${t.runtimeKind} = 'messages_api'`,
     ),
+    check(
+      'ai_employee_home_org_unit_required',
+      sql`${t.homeOrgUnitId} is not null or ${t.roleTemplateKey} = 'ceo_assistant'`,
+    ),
+    // Mỗi công ty tối đa một CEO AI Assistant chưa lưu trữ (kể cả `suspended`); sau khi archive thì tạo lại được.
+    uniqueIndex('ai_employee_one_ceo_assistant')
+      .on(t.companyId)
+      .where(sql`${t.roleTemplateKey} = 'ceo_assistant' and ${t.status} <> 'archived'`),
     index('ai_employee_home_idx').on(t.companyId, t.homeOrgUnitId),
     index('ai_employee_manager_idx').on(t.companyId, t.managerKind, t.managerId),
   ],

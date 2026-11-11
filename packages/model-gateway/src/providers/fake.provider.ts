@@ -3,6 +3,7 @@ import type {
   AcceptanceCriterion,
   DecompositionPlan,
   ReviewResult,
+  TaskProposal,
 } from '@claude-company/contracts';
 import { parseInput } from '../input-format';
 import {
@@ -35,6 +36,9 @@ export type FakeInput = {
   reworkReasons: string[];
   reworkRound: number;
   directive: string;
+  /** Input có thẻ `current_values` nghĩa là đây là run `propose` của CEO AI Assistant. */
+  isPropose: boolean;
+  currentValues?: { now?: string; deadline?: string; priority?: string };
   /** Có khi run được resume sau quyết định phê duyệt (thẻ `approval_result`). */
   approvalResult?: { actionType?: string; decision?: string; reason?: string | null; executed?: boolean };
   raw: string;
@@ -90,6 +94,11 @@ export function readFakeInput(raw: string): FakeInput {
     managerMessages,
     reworkReasons: asArray<string>(parsed.rework_reasons).map(String),
     reworkRound: typeof parsed.review_round === 'number' ? parsed.review_round : 0,
+    isPropose: parsed.current_values !== undefined,
+    currentValues:
+      parsed.current_values && typeof parsed.current_values === 'object'
+        ? (parsed.current_values as FakeInput['currentValues'])
+        : undefined,
     directive: [directive, objective, ...managerMessages].join('\n'),
     approvalResult:
       parsed.approval_result && typeof parsed.approval_result === 'object'
@@ -240,6 +249,9 @@ export class FakeModelProvider implements ModelGateway {
     if (directives.has('shell') && toolNames.has('workspace_shell')) {
       await collect(this.callTool(io, 'workspace_shell', { command: directives.get('shell') }));
     }
+    // Kịch bản của CEO AI Assistant (company-ops): tool điều hành, hỏi lại, prompt injection, vượt số thao tác.
+    const ops = await this.assistantOps(io, input, directives);
+    if (ops.paused && !paused) paused = ops.paused;
 
     if (paused) {
       // Như MessagesApiProvider: lưu hội thoại TRƯỚC khi tạm dừng để run resume được sau cả khi worker restart.
@@ -274,6 +286,8 @@ export class FakeModelProvider implements ModelGateway {
       input.artifacts.length > 0
         ? `\n\nTổng hợp ${input.artifacts.length} kết quả thành phần.`
         : '',
+      // Báo cáo của trợ lý trích đúng số liệu từ kết quả `company.query` (SC-017).
+      ...ops.queries.map((q) => `\n\n## Dữ liệu company.query\n\n\`\`\`json\n${JSON.stringify(q)}\n\`\`\``),
     ].join('\n');
 
     if (toolNames.has('artifact_publish') && !directives.has('no_artifact')) {
@@ -302,6 +316,104 @@ export class FakeModelProvider implements ModelGateway {
     yield { type: 'finished', output: { summary: body }, text: body };
   }
 
+  /**
+   * Kịch bản tất định cho CEO AI Assistant, chọn bằng chỉ thị `[[fake:...]]` trong lời CEO. Mọi lời gọi đi qua
+   * `io.invokeTool` nên ToolBroker/PermissionEngine cưỡng chế như với tool thật; chỉ thị chỉ là dữ liệu test.
+   * - `query=<view>`: `company_query`; kết quả được chép vào báo cáo.
+   * - `task_create=<assigneeId>` (`assignee_kind`, `criterion`, `source=ceo_quote|proposed`, `lie=1` diễn đạt lại nhưng vẫn khai ceo_quote).
+   * - `org_unit=<tên>` (`kind`, `parent`), `org_team=<tên>` (`unit`), `employee_create=<tên>` (`template`, `unit`).
+   * - `archive_unit|archive_team|archive_employee|cancel_task=<id>`: đề xuất cần Human Approval.
+   * - `restricted=<tên tool>`: gọi tool `restricted`/không ánh xạ như bị prompt injection dụ.
+   * - `loop_ops=<N>`: gọi `org_unit_upsert` N lần để vượt `ASSISTANT_MAX_OPS_PER_RUN`.
+   * - `ask=<câu hỏi>`: hỏi lại bằng `task_message_post`, không thay đổi dữ liệu.
+   */
+  private async assistantOps(
+    io: AgentRunIO,
+    input: FakeInput,
+    directives: Map<string, string>,
+  ): Promise<{ paused: { approvalRequestId: string } | null; queries: unknown[] }> {
+    const queries: unknown[] = [];
+    let paused: { approvalRequestId: string } | null = null;
+    const call = async (name: string, toolInput: unknown) => {
+      const result = await collect(this.callTool(io, name, toolInput));
+      if (result.status === 'pending_approval') {
+        paused ??= {
+          approvalRequestId: String((result.output as { approvalRequestId?: string })?.approvalRequestId ?? ''),
+        };
+      }
+      return result;
+    };
+    const unitId = directives.get('unit') ?? '';
+    const deadline = new Date(Date.now() + 7 * 86_400_000).toISOString();
+
+    if (directives.has('ask')) {
+      await call('task_message_post', { body: directives.get('ask') });
+    }
+    if (directives.has('query')) {
+      const result = await call('company_query', { view: directives.get('query') });
+      if (result.status === 'ok') queries.push(result.output);
+    }
+    if (directives.has('org_unit')) {
+      await call('org_unit_upsert', {
+        name: directives.get('org_unit'),
+        kind: directives.get('kind') ?? 'department',
+        ...(directives.get('parent') ? { parentId: directives.get('parent') } : {}),
+      });
+    }
+    if (directives.has('org_team')) {
+      await call('org_team_upsert', { name: directives.get('org_team'), orgUnitId: unitId });
+    }
+    if (directives.has('employee_create')) {
+      await call('employee_create', {
+        roleTemplateKey: directives.get('template') ?? 'ai_developer',
+        name: directives.get('employee_create'),
+        homeOrgUnitId: unitId,
+      });
+    }
+    if (directives.has('task_create')) {
+      const criterion = directives.get('criterion') ?? input.objective.slice(0, 60);
+      await call('task_create', {
+        title: directives.get('task_title') || `Việc từ yêu cầu: ${input.objective.slice(0, 50)}`,
+        // `child_decompose=N`: task con tạo ra yêu cầu AI Manager phân rã thành N task con (chỉ thị riêng, không lẫn với task của trợ lý).
+        objective:
+          (directives.get('objective') || input.objective) +
+          (directives.has('child_decompose') ? ` [[fake:decompose=${directives.get('child_decompose')}]]` : ''),
+        assignee: { kind: directives.get('assignee_kind') ?? 'ai_employee', id: directives.get('task_create') },
+        deadline,
+        priority: 'medium',
+        expectedOutput: 'Tài liệu kết quả',
+        acceptanceCriteria: [
+          {
+            text: directives.has('lie') ? `${criterion} (diễn đạt lại)` : criterion,
+            source: directives.get('source') ?? 'ceo_quote',
+          },
+        ],
+      });
+    }
+    if (directives.has('archive_unit')) {
+      await call('org_archive', { targetKind: 'org_unit', targetId: directives.get('archive_unit') });
+    }
+    if (directives.has('archive_team')) {
+      await call('org_archive', { targetKind: 'team', targetId: directives.get('archive_team') });
+    }
+    if (directives.has('archive_employee')) {
+      await call('employee_archive', { employeeId: directives.get('archive_employee') });
+    }
+    if (directives.has('cancel_task')) {
+      await call('task_cancel', { taskId: directives.get('cancel_task'), reason: 'Theo yêu cầu của CEO' });
+    }
+    if (directives.has('restricted')) {
+      await call(directives.get('restricted') ?? 'approval_decide', {});
+    }
+    if (directives.has('loop_ops')) {
+      for (let i = 0; i < Number(directives.get('loop_ops')); i += 1) {
+        const result = await call('org_unit_upsert', { name: `Đơn vị lặp ${i + 1}`, kind: 'division' });
+        if (result.status === 'run_locked') break;
+      }
+    }
+    return { paused, queries };
+  }
+
   /** Decompose / review / synthesize-plan: trả kết quả theo schema, không dùng tool. */
   private async *structured(
     req: AgentRunRequest,
@@ -315,7 +427,9 @@ export class FakeModelProvider implements ModelGateway {
     const isReview = input.hasArtifactsSection;
     const isDecompose = !isReview;
     let output: unknown;
-    if (isReview) {
+    if (input.isPropose) {
+      output = defaultProposal(input, directives);
+    } else if (isReview) {
       output = this.options.review?.(input) ?? defaultReview(input, directives);
     } else if (isDecompose) {
       output = this.options.decompose?.(input) ?? defaultDecomposition(input, directives);
@@ -350,6 +464,23 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
     if (signal.aborted) return resolve();
     signal.addEventListener('abort', () => resolve(), { once: true });
   });
+}
+
+/**
+ * Đề xuất của CEO AI Assistant cho task yêu cầu (run `propose`): tiêu chí bám lời CEO. Chỉ thị: `proposal=invalid` trả
+ * kết quả sai schema, `proposal=past` trả deadline đã qua, `priority=<mức>`.
+ */
+function defaultProposal(input: FakeInput, directives: Map<string, string>): TaskProposal | { title: string } {
+  if (directives.get('proposal') === 'invalid') return { title: '' };
+  const now = new Date(input.currentValues?.now ?? Date.now()).getTime();
+  const goal = input.objective.replace(/\[\[fake:[^\]]+\]\]/g, '').trim() || input.objective;
+  return {
+    title: goal.slice(0, 80),
+    acceptanceCriteria: [`Hoàn thành yêu cầu: ${goal.slice(0, 120)}`, 'Nộp báo cáo nêu thao tác đã làm và kết quả'],
+    expectedOutput: 'Báo cáo artifact nêu thao tác đã thực hiện và kết quả',
+    deadline: new Date(directives.get('proposal') === 'past' ? now - 86_400_000 : now + 2 * 86_400_000).toISOString(),
+    priority: (directives.get('priority') as TaskProposal['priority'] | undefined) ?? 'high',
+  };
 }
 
 /** Mặc định: `confirm` (giữ nguyên phân công). `[[fake:decompose=N]]` chia N task con cho N nhân viên đầu tiên. */

@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { DecompositionPlan, EmployeeProfile, Task } from '@claude-company/contracts';
 import type { FakeInput } from '@claude-company/model-gateway';
+import { eq } from 'drizzle-orm';
+import { withTenant } from '@claude-company/db';
+import { humanMember } from '@claude-company/db/schema/employee';
+import { UsageBudgetService } from '../../apps/api/src/platform/usage-budget/budget.service';
 import { prepareDatabase, seedDatabase, startInfra, type StartedInfra } from '../support/containers';
 import {
   createFlowHarness,
@@ -253,6 +257,132 @@ describe('Integration: phân rã task bởi AI Manager (US3-AS2, FR-016, FR-018)
     const p = await detail(c, t.id);
     expect(p.decomposedByEmployeeId).toBe(c.m1.id);
     expect(p.subtasks).toHaveLength(1);
+  });
+
+  it('task giao Team chưa có AI Manager nào → tự tạo AI Manager cho team (CEO là manager trực tiếp) rồi phân rã', async () => {
+    const scene = await h.newScene();
+    const dev = await h.hire(scene, { name: 'Dev Solo', homeOrgUnitId: scene.units.Development! });
+    const team = await h.org.upsertTeam(scene.ctx(), { orgUnitId: scene.units.Development!, name: 'Team Web' });
+    await h.org.setTeamMembers(scene.ctx(), team.id, [{ kind: 'ai', id: dev.id }]);
+    hooks.decompose = undefined;
+    const c = { scene } as Company;
+    const t = await give(c, h, taskBody({ kind: 'team', id: team.id }, { objective: 'Việc team [[fake:decompose=1]]' }));
+    await h.settle();
+
+    const p = await detail(c, t.id);
+    expect(p.status).not.toBe('blocked');
+    const manager = await h.employees.get(scene.ctx(), p.decomposedByEmployeeId!);
+    expect(manager).toMatchObject({
+      kind: 'manager',
+      runtimeKind: 'messages_api',
+      name: 'AI Manager Team Web',
+      homeOrgUnitId: scene.units.Development!,
+      manager: { kind: 'human', id: scene.ceo.memberId },
+    });
+    expect(manager.teamIds).toContain(team.id);
+
+    // Task thứ hai dùng lại chính AI Manager đó, không tạo thêm.
+    const t2 = await give(c, h, taskBody({ kind: 'team', id: team.id }, { objective: 'Việc 2 [[fake:decompose=1]]' }));
+    await h.settle();
+    expect((await detail(c, t2.id)).decomposedByEmployeeId).toBe(manager.id);
+    const managers = await h.employees.list(scene.ctx(), { kind: 'manager' });
+    expect(managers).toHaveLength(1);
+  });
+
+  /** Công ty có Team Web với một Developer, chưa có AI Manager nào. */
+  async function teamWithoutManager() {
+    const scene = await h.newScene();
+    const dev = await h.hire(scene, { name: 'Dev Solo', homeOrgUnitId: scene.units.Development! });
+    const team = await h.org.upsertTeam(scene.ctx(), { orgUnitId: scene.units.Development!, name: 'Team Web' });
+    await h.org.setTeamMembers(scene.ctx(), team.id, [{ kind: 'ai', id: dev.id }]);
+    hooks.decompose = undefined;
+    return { scene, dev, team, c: { scene } as Company };
+  }
+  const managersOf = (scene: Scene) => h.employees.list(scene.ctx(), { kind: 'manager' });
+  const blockedNotices = async (scene: Scene) =>
+    (await h.communication.listNotifications(scene.humanCtx(scene.ceo.memberId), scene.ceo.memberId, {})).items;
+
+  it('manager trực tiếp của AI Manager tự tạo là người quản lý Team khi Team có', async () => {
+    const { scene, team, c } = await teamWithoutManager();
+    const mgr = await h.addManager(scene);
+    await h.org.assignManager(scene.ctx(), { kind: 'team', id: team.id }, mgr.memberId);
+    const t = await give(c, h, taskBody({ kind: 'team', id: team.id }, { objective: 'Việc team [[fake:decompose=1]]' }));
+    await h.settle();
+
+    const created = await h.employees.get(scene.ctx(), (await detail(c, t.id)).decomposedByEmployeeId!);
+    expect(created.manager).toEqual({ kind: 'human', id: mgr.memberId });
+  });
+
+  it('công ty không còn người thật hợp lệ → không tạo được AI Manager: task blocked/NO_AI_MANAGER (không có ai nhận thông báo)', async () => {
+    const { scene, team, c } = await teamWithoutManager();
+    const t = await give(c, h, taskBody({ kind: 'team', id: team.id }));
+    await withTenant(scene.companyId, (tx) =>
+      tx.update(humanMember).set({ disabledAt: new Date() }).where(eq(humanMember.id, scene.ceo.memberId)),
+    );
+    await h.settle();
+
+    expect(await detail(c, t.id)).toMatchObject({ status: 'blocked', blockedReason: 'NO_AI_MANAGER' });
+    expect(await managersOf(scene)).toHaveLength(0);
+    // Không còn CEO đang hoạt động nên bộ định tuyến thông báo cũng không có người nhận (chỉ ghi log lỗi).
+    await withTenant(scene.companyId, (tx) =>
+      tx.update(humanMember).set({ disabledAt: null }).where(eq(humanMember.id, scene.ceo.memberId)),
+    );
+    expect((await blockedNotices(scene)).filter((n) => n.type === 'escalation')).toHaveLength(0);
+  });
+
+  it('allowed_models chặn model của mẫu ai_manager → task blocked/NO_AI_MANAGER kèm escalation, không có AI Manager', async () => {
+    const { scene, team, c } = await teamWithoutManager();
+    await h.app.get(UsageBudgetService, { strict: false }).upsertPolicy(scene.ctx(), 'org_unit', scene.units.Development!, { allowedModels: ['claude-haiku-5-5'] });
+    const t = await give(c, h, taskBody({ kind: 'team', id: team.id }));
+    await h.settle();
+
+    expect(await detail(c, t.id)).toMatchObject({ status: 'blocked', blockedReason: 'NO_AI_MANAGER' });
+    expect(await managersOf(scene)).toHaveLength(0);
+    expect((await blockedNotices(scene)).map((n) => n.type)).toContain('escalation');
+  });
+
+  it('task giao trực tiếp cho AI Employee không tự tạo AI Manager; không có AI Manager thì vẫn blocked/NO_AI_MANAGER', async () => {
+    const { scene, dev, c } = await teamWithoutManager();
+    const t = await give(c, h, taskBody({ kind: 'ai_employee', id: dev.id }));
+    await h.settle();
+
+    expect(await detail(c, t.id)).toMatchObject({ status: 'blocked', blockedReason: 'NO_AI_MANAGER' });
+    expect(await managersOf(scene)).toHaveLength(0);
+  });
+
+  it('bước chọn reviewer (D5) không tự tạo AI Manager: thiếu reviewer độc lập vẫn blocked/NO_INDEPENDENT_REVIEWER', async () => {
+    const scene = await h.newScene();
+    const m1 = await h.hire(scene, managerProfile(scene));
+    const dev = await h.hire(scene, { manager: { kind: 'ai', id: m1.id } });
+    const c: Company = { scene, m1, m2: m1, d1: dev, d2: dev };
+    hooks.decompose = undefined;
+    const parent = await give(
+      c,
+      h,
+      taskBody({ kind: 'org_unit', id: scene.units.Development! }, { objective: 'Việc [[fake:decompose=1]]' }),
+    );
+    await h.settle();
+    await approve(c, (await detail(c, parent.id)).subtasks[0]!.id);
+    await h.settle();
+
+    expect(await detail(c, parent.id)).toMatchObject({ status: 'blocked', blockedReason: 'NO_INDEPENDENT_REVIEWER' });
+    expect(await managersOf(scene)).toHaveLength(1); // vẫn chỉ có m1
+  });
+
+  it('AI Manager đã thuộc nhiều Team: giao việc cho Team thứ hai dùng lại đúng AI Manager, không tạo mới', async () => {
+    const c = await company();
+    const teamA = await h.org.upsertTeam(c.scene.ctx(), { orgUnitId: c.scene.units.Development!, name: 'Team A' });
+    const teamB = await h.org.upsertTeam(c.scene.ctx(), { orgUnitId: c.scene.units.Development!, name: 'Team B' });
+    await h.org.setTeamMembers(c.scene.ctx(), teamA.id, [{ kind: 'ai', id: c.m1.id }, { kind: 'ai', id: c.d1.id }]);
+    await h.org.setTeamMembers(c.scene.ctx(), teamB.id, [{ kind: 'ai', id: c.m1.id }, { kind: 'ai', id: c.d2.id }]);
+    hooks.decompose = undefined;
+    const before = (await managersOf(c.scene)).length;
+
+    const t = await give(c, h, taskBody({ kind: 'team', id: teamB.id }, { objective: 'Việc team B [[fake:decompose=1]]' }));
+    await h.settle();
+
+    expect((await detail(c, t.id)).decomposedByEmployeeId).toBe(c.m1.id);
+    expect(await managersOf(c.scene)).toHaveLength(before);
   });
 
   it('AI Manager được giao trực tiếp tự đảm nhiệm bước xác nhận; nhiều AI Manager cùng bậc chọn id nhỏ nhất', async () => {

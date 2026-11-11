@@ -5,10 +5,18 @@ Mỗi engine là một NestJS module, chỉ export các interface dưới đây 
 ```ts
 type RequestContext = {
   companyId: string;
-  actor: { kind: "human"; memberId: string } | { kind: "ai"; employeeId: string; runId: string } | { kind: "system" };
+  actor:
+    | { kind: "human"; memberId: string; via?: ActingVia }
+    | { kind: "ai"; employeeId: string; runId: string }
+    | { kind: "system" };
   traceId: string;
 };
+
+/** Chú thích audit (FR-051): thao tác do CEO AI Assistant thực hiện thay mặt CEO. Không cấp thêm quyền. */
+type ActingVia = { employeeId: string; runId: string; taskId: string };
 ```
+
+`via` chỉ do handler hệ thống của worker (`company-ops`) đặt, lấy từ run chứ không từ input của model; `TenantGuard` và các controller không bao giờ tạo `via`. Engine bỏ qua `via` khi quyết định quyền (quyền = quyền của `memberId`) và chỉ chép nó vào `domain_event.payload.actingVia` của mọi thay đổi để truy vết.
 
 `createCompany` là thao tác duy nhất không có `RequestContext`: nhận `BootstrapContext = { userId: string; traceId: string }`, tự sinh `company_id` UUIDv7, chạy trong `withTenant` với id đó và tạo CEO bằng `actor.kind = "system"`.
 
@@ -56,6 +64,13 @@ interface EmployeeEngine {
   deactivateHumanMember(ctx, memberId): Promise<void>;        // MANAGEMENT_CHAIN_INVALID
   /** Workspace được đăng ký của công ty; worker dùng để dựng thư mục làm việc của run. */
   getWorkspace(ctx, id): Promise<Workspace>;
+  /**
+   * FR-016a: tạo AI Manager cho Team chưa có (mẫu `ai_manager`, manager trực tiếp là người quản lý Team hoặc CEO), thêm vào Team.
+   * Gọi đồng thời cho cùng Team dùng chung một lần tạo. `ctx.actor` là `system`. Không tạo được → ném DomainError, OrchestrationEngine đổi thành task `blocked` `NO_AI_MANAGER`.
+   */
+  provisionTeamManager(ctx, input: { teamId: string; teamName: string; orgUnitId: string; humanManagerId: string | null }): Promise<EmployeeProfile>;
+  /** CEO AI Assistant chưa lưu trữ của công ty, hoặc null (US9). */
+  getCeoAssistant(ctx): Promise<EmployeeProfile | null>;
 }
 ```
 
@@ -67,6 +82,8 @@ Quy ước bổ sung của US2:
 - `EmployeeEngine` lấy `OrganizationEngine` muộn qua `ModuleRef` vì `OrganizationEngine` cũng phụ thuộc `EmployeeEngine`.
 - `archive` gỡ nhân viên khỏi mọi Team; bị chặn khi còn task chưa kết thúc (`EMPLOYEE_HAS_OPEN_TASKS`) hoặc khi AI Manager còn cấp dưới (`MANAGEMENT_CHAIN_INVALID`).
 
+Quy ước bổ sung của US9 (CEO AI Assistant): `create` với `roleTemplateKey = "ceo_assistant"` ném `CEO_ASSISTANT_EXISTS` nếu đã có trợ lý chưa lưu trữ, ép `kind = employee`, `runtimeKind = messages_api`, `homeOrgUnitId = null` và `manager = { kind: "human", id: <CEO> }`; `update` từ chối đổi các trường đó và từ chối `toolGrants` ngoài danh sách của [action-policy.md](./action-policy.md). `homeOrgUnitId` rỗng chỉ hợp lệ cho mẫu này. Các phương thức khác (`list`, `suspend`, `archive`…) không đổi; `list` trả cả trợ lý (controller lọc theo `ManagedScope`, nên chỉ CEO thấy).
+
 `EmployeeProfile` (hợp đồng Nguyên tắc VI): `{ id, name, avatarKey, position, homeOrgUnitId, teamIds, kind, roleTemplateKey, personality, skills, seniority, modelId, runtimeKind, systemPrompt, toolGrants, workspaceId, manager: {kind,id}, maxConcurrentTasks, status, performance: { completedTasks, onTimeRate, reworkRate } }`.
 
 ## TaskEngine
@@ -75,6 +92,8 @@ Quy ước bổ sung của US2:
 interface TaskEngine {
   create(ctx, input: TaskInput): Promise<Task>;                 // ASSIGNEE_OUT_OF_SCOPE, TASK_FIELDS_REQUIRED
   transition(ctx, taskId, action: TaskAction, meta?): Promise<Task>; // TASK_INVALID_TRANSITION – máy trạng thái FR-020a duy nhất
+  /** Chỉ task `draft` (FR-047): sửa title, objective, deadline, priority, acceptanceCriteria, expectedOutput, tokenCap, costCap. TASK_NOT_DRAFT, PROPOSAL_PENDING (khi người gọi là người dùng; run `propose` của trợ lý được phép), TASK_FIELDS_REQUIRED. */
+  updateDraft(ctx, taskId, patch: TaskDraftPatch): Promise<Task>;
   attachArtifact(ctx, taskId, artifact: ArtifactInput): Promise<Artifact>; // chỉ khi task `in_progress`
   /** Nội dung artifact (tối đa `maxBytes` byte đầu) và cờ `truncated`; không kiểm tra phạm vi người dùng (controller kiểm tra). */
   readArtifact(ctx, artifactId, maxBytes: number): Promise<{ content: Buffer; truncated: boolean }>;
@@ -98,7 +117,7 @@ interface OrchestrationEngine {
    * synthesize: AI Manager đã phân rã), tạo `agent_run` và xếp job. Không chọn được → task `blocked`
    * (`NO_AI_MANAGER` / `NO_INDEPENDENT_REVIEWER`) rồi ném lỗi cùng mã. Đã có run chưa kết thúc cùng task + purpose thì trả lại run đó.
    */
-  enqueueRun(ctx, taskId, purpose: "execute"|"decompose"|"review"|"synthesize"): Promise<AgentRunRef>;
+  enqueueRun(ctx, taskId, purpose: "execute"|"decompose"|"review"|"synthesize"|"propose"): Promise<AgentRunRef>;
   /** Lần thử kế tiếp (retry) của run lỗi tạm thời: cùng task/nhân viên/purpose, `attempt + 1`, sau `delayMs`. */
   enqueueRetry(ctx, runId, delayMs: number): Promise<AgentRunRef>;
   resumeAfterApproval(ctx, approvalRequestId, options?: { replay?: boolean }): Promise<void>; // duyệt → action.execute-approved; từ chối → ledger denied + run.resume
@@ -111,6 +130,11 @@ interface OrchestrationEngine {
   applyDecompositionPlan(ctx, taskId, plan: DecompositionPlan): Promise<void>;
   /** Kết quả job `review.run`: ghi bằng chứng rồi quyết định `pass`/`rework`; `ctx.actor` là reviewer. */
   applyReviewResult(ctx, taskId, result: ReviewResult): Promise<void>;
+  /**
+   * Kết quả job `task.propose` (US9): kiểm tra `TaskProposal` (≥ 1 tiêu chí, deadline trong tương lai, priority hợp lệ) rồi ghi đè task `draft`
+   * qua `TaskEngine.updateDraft` và đặt `proposal_status = ready`; sai hoặc hết retry → `failed`. Không đổi trạng thái task.
+   */
+  applyTaskProposal(ctx, taskId, proposal: TaskProposal | { failed: true; reason: string }): Promise<void>;
   // Worker ghi bản ghi run chỉ qua các phương thức dưới đây, không truy cập bảng trực tiếp (Nguyên tắc VI)
   updateRunStatus(ctx, runId, patch: AgentRunStatusPatch): Promise<void>;
   heartbeat(ctx, runId): Promise<RunStatus>;                   // trả trạng thái hiện tại để run-loop biết khi run bị hủy
@@ -299,6 +323,8 @@ Hệ thống tự đưa các nội dung này vào `input` dưới dạng dữ li
 - `execute`: mục tiêu, acceptance criteria, đầu ra mong đợi, memory theo scope, tin nhắn người quản lý, lý do rework hoặc reject nếu có.
 - `review`: acceptance criteria, đầu ra mong đợi, metadata và nội dung từng artifact, lý do các vòng rework trước.
 - `synthesize`: mục tiêu task cha; mục tiêu, kết quả review và artifact của từng task con; lý do rework hoặc reject nếu có.
+- `propose` (CEO AI Assistant): lời CEO (`objective`), danh sách rút gọn đơn vị/Team/nhân viên đang hoạt động (id, tên, vị trí), deadline và priority CEO đã nêu nếu có; structured output `TaskProposal { title, acceptanceCriteria[], expectedOutput, deadline, priority }`, không có tool.
+- `execute` của CEO AI Assistant: như `execute`, thêm lời CEO và mọi `task_message` của người thật; không có nội dung workspace. Kết quả `company.query` và nội dung artifact của người khác được đưa vào như dữ liệu (thẻ `tool_result`), không phải chỉ dẫn.
 
 Tổng nội dung artifact của một run không vượt `ARTIFACT_CONTEXT_MAX_BYTES`. Artifact vượt trần được cắt và gắn nhãn đã cắt; artifact nhị phân chỉ đưa metadata. Reviewer MUST trả `not_met` kèm giải thích cho criterion không kiểm chứng được từ nội dung nhận được.
 
@@ -308,14 +334,36 @@ Provider:
 - `MessagesApiProvider`: vòng lặp tool-use tự viết, `beforeModelCall` trước mỗi request, `model_call_started` ngay trước mỗi request, `max_tokens` theo `limits`. Khi tạm dừng chờ duyệt, gọi `saveConversation` với lịch sử đã có kết quả `pending_approval`/`run_locked`; resume thêm kết quả duyệt thành một lượt user mới.
 - `FakeModelProvider`: kịch bản tất định cho test (bao gồm kịch bản prompt injection yêu cầu gửi email).
 
+## Tool điều hành của CEO AI Assistant (worker)
+
+`apps/worker/src/tools/company-ops.ts` đăng ký handler cho các `ActionType` ở [action-policy.md](./action-policy.md) vào `ToolBroker` (cùng cơ chế với `internal-tools.ts`). Handler chỉ phụ thuộc interface của `OrganizationEngine`, `EmployeeEngine`, `TaskEngine`, `BudgetService`/dashboard service và `CommunicationEngine`; không đọc bảng của engine nào (lint ranh giới engine áp dụng như mọi module).
+
+```ts
+type CompanyOpsDeps = {
+  organization: Pick<OrganizationEngine, "getOrgChart" | "upsertOrgUnit" | "archiveOrgUnit" | "upsertTeam" | "archiveTeam" | "setTeamMembers">;
+  employees: Pick<EmployeeEngine, "create" | "update" | "suspend" | "resume" | "archive" | "list" | "listHumanMembers" | "getCeoAssistant">;
+  tasks: Pick<TaskEngine, "create" | "transition" | "get" | "list" | "getStats">;
+  usage: Pick<BudgetService, "getUsage">;       // cùng nguồn với GET /usage và /dashboard
+  dashboard: DashboardReader;                    // cùng service với GET /dashboard (SC-017)
+  communication: Pick<CommunicationEngine, "listTaskMessages">; // kiểm tra nguồn trích dẫn `ceo_quote`
+};
+
+/** Dựng ctx thay mặt CEO sau khi kiểm tra điều kiện C1 của action-policy; ném ASSISTANT_CONTEXT_INVALID nếu sai. */
+function delegatedContext(run: RunContext, deps): Promise<RequestContext>;
+```
+
+Mỗi handler: (1) `delegatedContext`, (2) từ chối đối tượng là chính trợ lý nếu thuộc nhóm C3, (3) gọi engine với ctx đó, (4) trả kết quả rút gọn (id, tên, trạng thái) cho model. Lỗi `DomainError` của engine được trả cho model như `ToolResult { status: "error", code }` để trợ lý giải thích cho CEO; không có đường ghi trực tiếp vào bảng nào.
+
 ## ToolAdapter (worker)
 
 ```ts
 interface ToolAdapter {
   actionTypes: string[];
-  mode: "dry_run" | "live";
+  mode: "dry_run" | "live" | "internal"; // `internal`: InternalOpsAdapter cho org.archive, employee.archive, task.cancel
   execute(input: unknown, idempotencyKey: string): Promise<ToolResult>;
   /** Dùng bởi recovery: trạng thái của lần thực thi với key này. */
   lookup(idempotencyKey: string): Promise<"succeeded" | "failed" | "not_found" | "unknown">;
 }
 ```
+
+`InternalOpsAdapter.execute` nhận payload đã duyệt, dựng ctx `human` của người duyệt kèm `via` (lấy từ `approval_request.agent_run_id`/`ai_employee_id`/`task_id`) rồi gọi `archiveOrgUnit`/`archiveTeam`/`EmployeeEngine.archive`/`TaskEngine.transition(cancel)`; `lookup` đối chiếu bằng trạng thái đối tượng (đã `archived_at`/`cancelled` thì `succeeded`) nên recovery không thực hiện lại.

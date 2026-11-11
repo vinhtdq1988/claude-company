@@ -16,12 +16,16 @@ export type EmployeeStatus = z.infer<typeof employeeStatusSchema>;
 export const managerRefSchema = z.object({ kind: z.enum(['human', 'ai']), id: uuidSchema });
 export type ManagerRef = z.infer<typeof managerRefSchema>;
 
+/** Khóa mẫu vai trò của CEO AI Assistant (FR-046): trợ lý cấp công ty, không thuộc đơn vị nào. */
+export const CEO_ASSISTANT_TEMPLATE_KEY = 'ceo_assistant';
+
 export type EmployeeProfile = {
   id: string;
   name: string;
   avatarKey: string;
   position: string;
-  homeOrgUnitId: string;
+  /** Null chỉ với CEO AI Assistant (`roleTemplateKey = 'ceo_assistant'`). */
+  homeOrgUnitId: string | null;
   teamIds: string[];
   kind: EmployeeKind;
   roleTemplateKey: string | null;
@@ -50,7 +54,7 @@ const employeeFields = z.object({
   name: z.string().trim().min(1).max(EMPLOYEE_NAME_MAX),
   avatarKey: z.string().trim().min(1).max(64),
   position: z.string().trim().min(1).max(120),
-  homeOrgUnitId: uuidSchema,
+  homeOrgUnitId: uuidSchema.nullable(),
   kind: employeeKindSchema,
   roleTemplateKey: z.string().trim().min(1).max(64).nullable(),
   personality: z.string().trim().max(2000),
@@ -79,8 +83,24 @@ const managerRuntimeRule = (
   }
 };
 
+/** `homeOrgUnitId` rỗng chỉ dành cho CEO AI Assistant (khớp `CHECK` của `ai_employee`). */
+const homeOrgUnitRule = (
+  value: { homeOrgUnitId?: string | null; roleTemplateKey?: string | null },
+  ctx: z.RefinementCtx,
+) => {
+  if (value.homeOrgUnitId === null && value.roleTemplateKey !== CEO_ASSISTANT_TEMPLATE_KEY) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['homeOrgUnitId'],
+      message: 'Chỉ CEO AI Assistant được phép không có đơn vị nhà',
+    });
+  }
+};
+
 /** Dạng đầy đủ, `manager` bắt buộc: kiểu của `EmployeeEngine.create`. */
-export const employeeProfileInputSchema = employeeFields.superRefine(managerRuntimeRule);
+export const employeeProfileInputSchema = employeeFields
+  .superRefine(managerRuntimeRule)
+  .superRefine(homeOrgUnitRule);
 export type EmployeeProfileInput = z.infer<typeof employeeProfileInputSchema>;
 
 /**
@@ -89,7 +109,8 @@ export type EmployeeProfileInput = z.infer<typeof employeeProfileInputSchema>;
  */
 export const createEmployeeSchema = employeeFields
   .extend({ manager: managerRefSchema.nullish() })
-  .superRefine(managerRuntimeRule);
+  .superRefine(managerRuntimeRule)
+  .superRefine(homeOrgUnitRule);
 export type CreateEmployeeInput = z.infer<typeof createEmployeeSchema>;
 
 export const updateEmployeeSchema = employeeFields
@@ -153,6 +174,19 @@ export const createWorkspaceSchema = z.object({
   defaultBranch: z.string().trim().min(1).max(128).nullish(),
 });
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
+
+/** Thư mục gốc cho phép của workspace. `rootPath` null là chưa tùy chỉnh (dùng `defaultRoot`). */
+export type WorkspaceSettings = {
+  rootPath: string | null;
+  defaultRoot: string;
+  effectiveRoot: string;
+};
+
+/** `rootPath: null` đặt lại về mặc định. */
+export const updateWorkspaceSettingsSchema = z.object({
+  rootPath: z.string().trim().min(1).max(512).nullable(),
+});
+export type UpdateWorkspaceSettingsInput = z.infer<typeof updateWorkspaceSettingsSchema>;
 
 export type ModelInfo = {
   modelId: string;

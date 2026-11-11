@@ -3,7 +3,7 @@ import type { ScopeRef } from './common';
 import type { NotificationType } from './task';
 import type { RuntimeKind } from './employee';
 
-export const RUN_PURPOSES = ['execute', 'decompose', 'review', 'synthesize'] as const;
+export const RUN_PURPOSES = ['execute', 'decompose', 'review', 'synthesize', 'propose'] as const;
 export const runPurposeSchema = z.enum(RUN_PURPOSES);
 export type RunPurpose = z.infer<typeof runPurposeSchema>;
 
@@ -67,7 +67,7 @@ export type ToolInvocationStatus =
   | 'failed'
   | 'unknown';
 
-export type AdapterMode = 'dry_run' | 'live';
+export type AdapterMode = 'dry_run' | 'live' | 'internal';
 
 export type ToolInvocation = {
   id: string;
@@ -203,4 +203,6 @@ export type ToolResult = {
   status: 'ok' | 'pending_approval' | 'run_locked' | 'denied' | 'error';
   output?: unknown;
   message?: string;
+  /** Mã lỗi nghiệp vụ của engine (`DomainError.code`) khi tool lỗi hoặc bị từ chối. */
+  code?: string;
 };

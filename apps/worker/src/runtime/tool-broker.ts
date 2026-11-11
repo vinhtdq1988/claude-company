@@ -8,12 +8,31 @@ import {
   type ToolInvocationRef,
   type ToolResult,
 } from '@claude-company/contracts';
-import { classifyShellCommand, getActionDefinition, sha256, stableStringify } from '@claude-company/policy';
-import { FailClosedApprovalGate, type HumanApprovalGate, type RunContext, type ToolHandler } from './run-context';
+import {
+  ACTION_CATALOG,
+  classifyShellCommand,
+  getActionDefinition,
+  sha256,
+  stableStringify,
+} from '@claude-company/policy';
+import {
+  FailClosedApprovalGate,
+  type HumanApprovalGate,
+  type RunContext,
+  type ToolGuard,
+  type ToolHandler,
+} from './run-context';
 import { redact } from './redact';
 import { actionTypeForTool } from './tool-specs';
 
 export { sha256, stableStringify };
+
+/** Tool ghi của CEO AI Assistant: bị đếm theo `ASSISTANT_MAX_OPS_PER_RUN`. `company.query` chỉ đọc nên không đếm. */
+const ASSISTANT_WRITE_ACTIONS: ReadonlySet<string> = new Set(
+  ACTION_CATALOG.filter(
+    (a) => a.assistantOnly && a.runtimes.length > 0 && a.actionType !== 'company.query',
+  ).map((a) => a.actionType),
+);
 
 export type ToolBrokerDeps = {
   orchestration: Pick<
@@ -26,8 +45,15 @@ export type ToolBrokerDeps = {
   permissions: Pick<PermissionEngine, 'evaluate'>;
   tasks: Pick<TaskEngine, 'get'>;
   handlers: ReadonlyMap<string, ToolHandler>;
+  /** Guard theo ActionType (C1/C3 của CEO AI Assistant): chạy trước khi tạo ledger/approval. */
+  guards?: ReadonlyMap<string, ToolGuard>;
   humanApproval?: HumanApprovalGate;
   toolTimeoutMs: number;
+  /**
+   * `ASSISTANT_MAX_OPS_PER_RUN`: số lời gọi tool ghi tối đa trong một run của CEO AI Assistant. Vượt thì tool trả
+   * `run_locked` và task `blocked` qua cơ chế khóa sẵn có (R14 Decision 12). Không đặt = không giới hạn.
+   */
+  maxWriteOpsPerRun?: number;
 };
 
 /**
@@ -64,6 +90,19 @@ export class ToolBroker {
         return { status: 'error', message: `Input không hợp lệ: ${parsed.error?.message ?? ''}` };
       }
       input = parsed.data;
+    }
+    // Chốt chặn bổ sung cho tool ghi của CEO AI Assistant: thao tác tổ chức không tốn token tỷ lệ với số bản ghi.
+    const max = this.deps.maxWriteOpsPerRun;
+    if (max !== undefined && ASSISTANT_WRITE_ACTIONS.has(actionType)) {
+      run.state.writeOps = (run.state.writeOps ?? 0) + 1;
+      if (run.state.writeOps > max) {
+        const reason = `Vượt số thao tác ghi tối đa trong một run (${max})`;
+        run.state.locked = true;
+        run.state.lockReason = reason;
+        run.state.blockedReason = 'BUDGET_EXCEEDED';
+        await this.step(run, `Tool "${call.name}" bị khóa: ${reason}`, { tool: call.name, locked: reason });
+        return { status: 'run_locked', message: reason };
+      }
     }
     // Lý do do agent đưa ra không thuộc payload: tách trước khi đánh giá quyền và băm (hiển thị như dữ liệu).
     let rationale: string | undefined;
@@ -118,8 +157,9 @@ export class ToolBroker {
       }
     }
 
-    // 6. Ghi ledger rồi xử lý theo mức quyền.
-    const denied = level === 'restricted';
+    // 6. Ghi ledger rồi xử lý theo mức quyền. Guard của hành động điều hành (C1/C3) cũng dẫn tới `denied` có ledger.
+    const guardError = level === 'restricted' ? undefined : await this.runGuard(run, actionType, input);
+    const denied = level === 'restricted' || guardError !== undefined;
     const invocation = await this.deps.orchestration.recordToolInvocation(run.ctx, {
       runId: run.runId,
       runStepId: step.id,
@@ -129,7 +169,11 @@ export class ToolBroker {
       inputHash,
       idempotencyKey: key,
       status: denied ? 'denied' : level === 'human_approval' ? 'pending_approval' : 'executing',
+      ...(guardError ? { result: { code: guardError.code, message: guardError.message } } : {}),
     });
+    if (guardError) {
+      return { status: 'denied', code: guardError.code, message: guardError.message };
+    }
     if (denied) return { status: 'denied', message: reason };
 
     if (level === 'human_approval') {
@@ -189,11 +233,35 @@ export class ToolBroker {
       return { status: 'ok', output };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Lỗi nghiệp vụ của engine (ví dụ ORG_UNIT_NOT_EMPTY, MODEL_NOT_ALLOWED) trả kèm mã để agent xử lý đúng.
+      const code = error instanceof DomainError ? error.code : undefined;
       await this.deps.orchestration.updateToolInvocation(run.ctx, invocation.id, {
         status: 'failed',
-        result: { error: redact(message) },
+        result: { error: redact(message), ...(code ? { code } : {}) },
       });
-      return { status: 'error', message: redact(message) };
+      return { status: 'error', message: redact(message), ...(code ? { code } : {}) };
+    }
+  }
+
+  /** Chạy guard của hành động (nếu có); chỉ lỗi `ASSISTANT_*` thành từ chối, lỗi khác nổi lên như lỗi hệ thống. */
+  private async runGuard(
+    run: RunContext,
+    actionType: string,
+    input: unknown,
+  ): Promise<DomainError | undefined> {
+    const guard = this.deps.guards?.get(actionType);
+    if (!guard) return undefined;
+    try {
+      await guard(run, input);
+      return undefined;
+    } catch (error) {
+      if (
+        error instanceof DomainError &&
+        (error.code === 'ASSISTANT_CONTEXT_INVALID' || error.code === 'ASSISTANT_SELF_TARGET')
+      ) {
+        return error;
+      }
+      throw error;
     }
   }
 

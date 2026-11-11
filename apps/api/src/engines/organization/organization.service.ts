@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import {
+  CEO_ASSISTANT_TEMPLATE_KEY,
   DomainError,
   orgTemplateDefinitionSchema,
   type BootstrapContext,
@@ -230,6 +231,8 @@ export class OrganizationService implements OrganizationEngine {
     );
     const ownCount = new Map<string, number>();
     for (const e of employees) {
+      // CEO AI Assistant là nhân viên cấp công ty, không thuộc đơn vị nào nên không tính vào đơn vị.
+      if (e.homeOrgUnitId === null) continue;
       ownCount.set(e.homeOrgUnitId, (ownCount.get(e.homeOrgUnitId) ?? 0) + 1);
     }
     const teamMembers = new Map<string, MemberRef[]>();
@@ -658,10 +661,12 @@ export class OrganizationService implements OrganizationEngine {
     const employeeIds: string[] = [];
     for (const e of await this.employees.list(ctx, {})) {
       if (e.status === 'archived') continue;
+      // CEO AI Assistant không bao giờ nằm trong phạm vi của Manager thường (FR-046); CEO xem qua `companyWide`.
+      if (e.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY) continue;
       const managedDirectly = e.manager.kind === 'human' && e.manager.id === memberId;
       if (
         managedDirectly ||
-        orgUnitIds.has(e.homeOrgUnitId) ||
+        (e.homeOrgUnitId !== null && orgUnitIds.has(e.homeOrgUnitId)) ||
         e.teamIds.some((t) => teamIds.has(t))
       ) {
         employeeIds.push(e.id);

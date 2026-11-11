@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -394,6 +395,47 @@ describe('Integration: AI Employee (T062; US2-AS1, AS2, AS3, AS4)', () => {
         fromTemplate('ai_developer', { workspaceId: '0197a000-0000-7000-8000-0000000000aa' }),
       );
       expect(missing.status).toBe(422);
+    });
+
+    it('CEO đặt thư mục gốc workspace theo công ty; workspace mới nằm trong gốc mới; đặt lại về mặc định', async () => {
+      const { session, companyId } = await setup();
+      const url = `${base(companyId)}/workspaces/settings`;
+      const initial = await session.get(url);
+      expect(initial.body).toEqual({
+        rootPath: null,
+        defaultRoot: path.resolve(workspaceRoot),
+        effectiveRoot: path.resolve(workspaceRoot),
+      });
+
+      const custom = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-custom-root-'));
+      const saved = await session.put(url, { rootPath: custom });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+      expect(saved.body).toMatchObject({ rootPath: path.resolve(custom), effectiveRoot: path.resolve(custom) });
+
+      const created = await session.post(`${base(companyId)}/workspaces`, {
+        name: 'Trong gốc mới',
+        kind: 'docs_folder',
+        mountPath: 'tai-lieu',
+      });
+      expect(created.status, JSON.stringify(created.body)).toBe(201);
+      expect((created.body as Workspace).mountPath).toBe(path.resolve(custom, 'tai-lieu'));
+
+      // Đường dẫn không tuyệt đối / không tồn tại bị từ chối.
+      expect((await session.put(url, { rootPath: 'tuong-doi' })).status).toBe(422);
+      expect((await session.put(url, { rootPath: path.join(custom, 'khong-co') })).status).toBe(422);
+      // Đặt lại về mặc định khi còn workspace nằm ngoài gốc mặc định → bị chặn.
+      expect((await session.put(url, { rootPath: null })).status).toBe(422);
+      expect(((await session.get(url)).body as { rootPath: string }).rootPath).toBe(path.resolve(custom));
+    });
+
+    it('đặt lại thư mục gốc về mặc định khi chưa có workspace nào nằm ngoài', async () => {
+      const { session, companyId } = await setup();
+      const url = `${base(companyId)}/workspaces/settings`;
+      const custom = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-custom-root-'));
+      expect((await session.put(url, { rootPath: custom })).status).toBe(200);
+      const reset = await session.put(url, { rootPath: null });
+      expect(reset.status, JSON.stringify(reset.body)).toBe(200);
+      expect(reset.body).toMatchObject({ rootPath: null, effectiveRoot: path.resolve(workspaceRoot) });
     });
   });
 });

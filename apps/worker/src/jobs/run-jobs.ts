@@ -11,6 +11,7 @@ export const RUN_JOB_NAMES: readonly JobName[] = [
   'task.decompose',
   'task.synthesize',
   'review.run',
+  'task.propose',
 ];
 
 /** Task đang có run khác: đặt lại job sau chừng này (ms). */

@@ -41,9 +41,9 @@ Base path: `/api/v1`. JSON. Schema chi tiết là Zod trong `packages/contracts`
 
 | Method | Path | Mô tả / Lỗi chính |
 |---|---|---|
-| GET | `/role-templates` | mẫu AI Developer, AI BA, AI QA, AI Manager |
+| GET | `/role-templates` | mẫu AI Developer, AI BA, AI QA, AI Manager, CEO AI Assistant (`ceo_assistant`) |
 | GET | `/companies/{cid}/employees` | lọc `orgUnitId, teamId, kind, status` |
-| POST | `/companies/{cid}/employees` | body `EmployeeProfileInput`; `422 MANAGER_REQUIRED` (US2-AS2); `422 MANAGEMENT_CHAIN_INVALID`; `422 MODEL_NOT_ALLOWED` (US6-AS5) |
+| POST | `/companies/{cid}/employees` | body `EmployeeProfileInput`; `422 MANAGER_REQUIRED` (US2-AS2); `422 MANAGEMENT_CHAIN_INVALID`; `422 MODEL_NOT_ALLOWED` (US6-AS5). `roleTemplateKey = "ceo_assistant"`: chỉ CEO (`403` với Manager), `409 CEO_ASSISTANT_EXISTS` nếu đã có trợ lý chưa lưu trữ (US9-AS1), `manager` bị ép là CEO, `homeOrgUnitId` bỏ trống |
 | GET | `/companies/{cid}/employees/{id}` | `EmployeeProfile` |
 | PATCH | `/companies/{cid}/employees/{id}` | đổi model chỉ ảnh hưởng nhân viên này (US2-AS3) |
 | POST | `/companies/{cid}/employees/{id}/suspend` · `/resume` | |
@@ -57,12 +57,27 @@ Base path: `/api/v1`. JSON. Schema chi tiết là Zod trong `packages/contracts`
 |---|---|---|
 | GET | `/companies/{cid}/tasks` | Task Board: lọc `status, assigneeKind, assigneeId, orgUnitId, priority, overdue, deadlineBefore` (FR-021) |
 | POST | `/companies/{cid}/tasks` | `{title, objective, assignee:{kind,id}, deadline, priority, acceptanceCriteria[], expectedOutput, tokenCap?, costCap?, dependsOn?[]}`; `422 TASK_FIELDS_REQUIRED`; `403 ASSIGNEE_OUT_OF_SCOPE` (US3-AS6). Tạo ở `draft`, `?assign=true` chuyển `assigned` |
-| GET | `/companies/{cid}/tasks/{id}` | chi tiết + subtasks + dependencies + decomposition plan + artifacts + evidence + reviews |
+| GET | `/companies/{cid}/tasks/{id}` | chi tiết + subtasks + dependencies + decomposition plan + artifacts + evidence + reviews; thêm `proposalStatus` và `assignedByEmployee` (hiển thị nhãn "tạo bởi CEO AI Assistant") |
+| PATCH | `/companies/{cid}/tasks/{id}` | sửa task `draft`: `{title?, objective?, deadline?, priority?, acceptanceCriteria?, expectedOutput?, tokenCap?, costCap?}`; trạng thái khác `draft` → `409 TASK_NOT_DRAFT`; `proposalStatus = pending` → `409 PROPOSAL_PENDING`; đổi người nhận không thuộc API này (tạo task mới). Cần quyền giao việc trên assignee như lúc tạo |
 | POST | `/companies/{cid}/tasks/{id}/transitions` | `{action: "assign"|"cancel"|"resume", reason?}` – các chuyển trạng thái do người dùng kích hoạt; chuyển không hợp lệ → `409 TASK_INVALID_TRANSITION`; `resume` task cha có task con bị hủy → `409 SUBTASK_CANCELLED`; `resume` khi assignee còn `suspended` → `409 EMPLOYEE_SUSPENDED` |
+| GET | `/companies/{cid}/tasks/{id}/operations` | thao tác điều hành do CEO AI Assistant thực hiện trong task yêu cầu (FR-051): `[{toolInvocationId, actionType, permissionLevel, status, summary, targetKind?, targetId?, approvalRequestId?, adapterMode?, executedAt?}]`, `status` ∈ `succeeded`, `failed`, `pending_approval`, `denied`, `unknown`, `executing`; dùng cho edge case "thao tác nào xong, thao tác nào chưa" để CEO chọn `resume` hoặc `cancel`. Task không phải của trợ lý trả `[]`. Ngoài phạm vi → `403` |
 | GET | `/companies/{cid}/tasks/{id}/executed-actions` | `[{toolInvocationId, actionType, adapterMode, status, executedAt}]`: hành động nhạy cảm đã thực thi của task, UI gắn nhãn "dry-run" theo `adapterMode` |
 | POST | `/companies/{cid}/tasks/{id}/decisions` | Human Manager: `{decision: "approve"|"reject"|"rework", reason}`, `reason` bắt buộc với mọi quyết định, thiếu → `422`; chỉ ở `awaiting_human_approval`; `409 EVIDENCE_INCOMPLETE` (US3-AS5) |
 | GET | `/companies/{cid}/tasks/{id}/messages` · POST | trao đổi gắn task (FR-022); tin nhắn người gửi tới AI được đưa vào run kế tiếp như dữ liệu |
 | GET | `/companies/{cid}/artifacts/{id}/content` | stream nội dung (kiểm tra scope task) |
+
+## CEO AI Assistant (US9)
+
+Chỉ CEO; Manager thường nhận `403` (trợ lý nằm ngoài `ManagedScope` của họ).
+
+| Method | Path | Mô tả / Lỗi chính |
+|---|---|---|
+| GET | `/companies/{cid}/ceo-assistant` | `{ assistant: EmployeeProfile \| null, canCreate: boolean }`; `canCreate = false` khi đã có trợ lý chưa lưu trữ |
+| POST | `/companies/{cid}/ceo-assistant/requests` | `{ goal, priority?, deadline? }` (US9-AS2) → `201 Task` ở `draft`, `proposalStatus = pending`, người giao = CEO, assignee = trợ lý. `409 CEO_ASSISTANT_REQUIRED` khi chưa có trợ lý hoặc trợ lý đang `suspended`/`archived` (FR-008: nhân viên tạm ngưng không nhận run mới); `422 TASK_FIELDS_REQUIRED` khi `goal` rỗng. Server xếp job `task.propose`; CEO xem đề xuất bằng `GET /tasks/{id}`, sửa bằng `PATCH /tasks/{id}` và giao bằng `POST /tasks/{id}/transitions {action:"assign"}` (`409 PROPOSAL_PENDING` nếu đề xuất chưa xong). Hỏi lại hoặc bổ sung dùng `POST /tasks/{id}/messages` (FR-022, US9-AS8) |
+
+Tạo, tạm ngưng, kích hoạt lại, lưu trữ trợ lý dùng các endpoint Employees (`POST /employees`, `/suspend`, `/resume`, `DELETE`). Việc duyệt hành động `org.archive`, `employee.archive`, `task.cancel` của trợ lý dùng `/approvals` hiện có (CEO là `approver`). Không có endpoint nào cho phép client gửi `via`.
+
+Mã lỗi mới: `CEO_ASSISTANT_EXISTS` (409), `CEO_ASSISTANT_REQUIRED` (409), `PROPOSAL_PENDING` (409), `TASK_NOT_DRAFT` (409). Mã dành cho kết quả tool (không phải HTTP): `ASSISTANT_CONTEXT_INVALID`, `ASSISTANT_SELF_TARGET`.
 
 ## Approvals (Human Approval)
 

@@ -66,7 +66,10 @@ export class MemoryService implements MemoryEngine {
     limit: number,
   ): Promise<MemoryEntry[]> {
     const employee = await this.employees.get(ctx, scope.employeeId);
-    const unitChain = await this.organization.resolveOrgUnitChain(ctx, employee.homeOrgUnitId);
+    // CEO AI Assistant không thuộc đơn vị nào nên không đọc được bộ nhớ của đơn vị.
+    const unitChain = employee.homeOrgUnitId
+      ? await this.organization.resolveOrgUnitChain(ctx, employee.homeOrgUnitId)
+      : [];
     const viewer: ScopeKey[] = [
       { kind: 'ai_employee', id: employee.id },
       ...employee.teamIds.map((id) => ({ kind: 'team' as const, id })),

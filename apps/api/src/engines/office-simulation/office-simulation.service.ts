@@ -278,13 +278,18 @@ export class OfficeSimulationService implements OfficeSimulationEngine {
     const all = (await this.employees.list(ctx, {})).filter((e) => e.status !== 'archived');
     const desks = assignDesks(all);
     const zoneOfUnit = new Map(read.zones.filter((z) => z.orgUnitId).map((z) => [z.orgUnitId, z]));
+    const ceoZone = read.zones.find((z) => z.kind === 'ceo_office');
     const statusOf = new Map(read.statuses.map((s) => [s.aiEmployeeId, s]));
     const visible = all.filter((e) => scope.companyWide || scope.employeeIds.includes(e.id));
 
     const employees: OfficeSnapshot['employees'] = [];
     for (const e of visible) {
       const desk = desks.get(e.id);
-      const zone = desk ? zoneOfUnit.get(desk.orgUnitId) : undefined;
+      const zone = desk
+        ? desk.orgUnitId
+          ? zoneOfUnit.get(desk.orgUnitId)
+          : ceoZone // nhân viên không có đơn vị nhà ngồi ở CEO Office
+        : undefined;
       if (!desk || !zone) continue;
       const s = statusOf.get(e.id);
       employees.push({
@@ -302,7 +307,7 @@ export class OfficeSimulationService implements OfficeSimulationEngine {
 
     const unitsInView = new Set<string>([
       ...scope.orgUnitIds,
-      ...visible.map((e) => e.homeOrgUnitId),
+      ...visible.flatMap((e) => (e.homeOrgUnitId ? [e.homeOrgUnitId] : [])),
     ]);
     const zones = read.zones
       .filter(

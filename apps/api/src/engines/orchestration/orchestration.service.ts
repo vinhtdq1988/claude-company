@@ -2,7 +2,9 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
   DomainError,
+  CEO_ASSISTANT_TEMPLATE_KEY,
   FINAL_RUN_STATUSES,
+  taskProposalSchema,
   type AgentRunDetail,
   type AgentRunRef,
   type AgentRunStatusPatch,
@@ -14,6 +16,7 @@ import {
   type OrchestrationEngine,
   type OrganizationEngine,
   type OrgChartNode,
+  type OrgChartTeam,
   type Page,
   type PermissionEngine,
   type PermissionLevel,
@@ -28,12 +31,15 @@ import {
   type RunStepRef,
   type Task,
   type TaskEngine,
+  type TaskOperation,
+  type TaskProposal,
   type ToolAdapter,
   type ToolInvocationInput,
   type ToolInvocationPatch,
   type ToolInvocationRef,
 } from '@claude-company/contracts';
 import { newId, withGlobal } from '@claude-company/db';
+import { ASSISTANT_ONLY_ACTIONS } from '@claude-company/policy';
 import { sql } from 'drizzle-orm';
 import type { AppConfig } from '../../platform/config/config';
 import { CONFIG } from '../../platform/config/infra.providers';
@@ -66,7 +72,19 @@ const JOB_FOR_PURPOSE: Record<RunPurpose, JobName> = {
   decompose: 'task.decompose',
   synthesize: 'task.synthesize',
   review: 'review.run',
+  propose: 'task.propose',
 };
+
+/** Hành động điều hành hiển thị ở `GET /tasks/{id}/operations`: tool của trợ lý và `email.send` (US9-AS5). */
+const OPERATION_ACTIONS: ReadonlySet<string> = new Set([...ASSISTANT_ONLY_ACTIONS, 'email.send']);
+
+/** Trường của input/kết quả tool dùng để chỉ ra đối tượng bị tác động. */
+const TARGET_FIELDS: ReadonlyArray<[kind: string, field: string]> = [
+  ['task', 'taskId'],
+  ['employee', 'employeeId'],
+  ['org_unit', 'orgUnitId'],
+  ['team', 'teamId'],
+];
 
 /** Run `queued` cũ hơn ngưỡng này mà chưa chạy: job có thể đã mất, enqueue lại (BullMQ khử trùng theo jobId). */
 const QUEUED_REPLAY_AFTER_MS = 2 * 60_000;
@@ -76,10 +94,14 @@ const APPROVAL_REPLAY_BUCKET_MS = 5 * 60_000;
 
 const SYSTEM = (ctx: RequestContext): RequestContext => ({ ...ctx, actor: { kind: 'system' } });
 
-function findTeamUnit(nodes: readonly OrgChartNode[], teamId: string): string | undefined {
+function findTeam(
+  nodes: readonly OrgChartNode[],
+  teamId: string,
+): { orgUnitId: string; team: OrgChartTeam } | undefined {
   for (const node of nodes) {
-    if (node.teams.some((t) => t.id === teamId)) return node.id;
-    const inner = findTeamUnit(node.children, teamId);
+    const team = node.teams.find((t) => t.id === teamId);
+    if (team) return { orgUnitId: node.id, team };
+    const inner = findTeam(node.children, teamId);
     if (inner) return inner;
   }
   return undefined;
@@ -133,6 +155,19 @@ export class OrchestrationService implements OrchestrationEngine {
         employeeId,
         status: employee.status,
       });
+    }
+    // Run `propose` chỉ dành cho CEO AI Assistant và task nháp đang chờ đề xuất; nó không đổi trạng thái task.
+    if (
+      purpose === 'propose' &&
+      (employee.roleTemplateKey !== CEO_ASSISTANT_TEMPLATE_KEY ||
+        task.status !== 'draft' ||
+        task.proposalStatus !== 'pending')
+    ) {
+      throw new DomainError(
+        'VALIDATION_FAILED',
+        'Run propose chỉ dành cho CEO AI Assistant với task nháp đang chờ đề xuất',
+        { taskId, purpose },
+      );
     }
 
     const { row, created } = await inTenant(ctx, async (tx) => {
@@ -209,6 +244,12 @@ export class OrchestrationService implements OrchestrationEngine {
         }
         return task.assigneeId;
       }
+      case 'propose': {
+        if (task.assigneeKind !== 'ai_employee') {
+          throw new DomainError('NO_SUITABLE_ASSIGNEE', 'Đề xuất chỉ dành cho CEO AI Assistant');
+        }
+        return task.assigneeId;
+      }
       case 'synthesize': {
         if (!task.decomposedByEmployeeId) {
           throw new DomainError('NO_AI_MANAGER', 'Task chưa có AI Manager phân rã để tổng hợp');
@@ -252,12 +293,35 @@ export class OrchestrationService implements OrchestrationEngine {
     }));
     if (task.assigneeKind === 'team') {
       const chart = await this.organization.getOrgChart(ctx);
-      const orgUnitId = findTeamUnit(chart.roots, task.assigneeId);
-      if (!orgUnitId) return undefined;
-      return pickDecomposer({
-        assignee: { kind: 'team', id: task.assigneeId, orgUnitId },
+      const found = findTeam(chart.roots, task.assigneeId);
+      if (!found) return undefined;
+      const picked = pickDecomposer({
+        assignee: { kind: 'team', id: task.assigneeId, orgUnitId: found.orgUnitId },
         employees,
       });
+      if (picked) return picked;
+      // Team chưa có AI Manager: tự tạo một AI Manager cho team (manager trực tiếp là người quản lý team hoặc CEO).
+      const created = await this.employees
+        .provisionTeamManager(SYSTEM(ctx), {
+          teamId: found.team.id,
+          teamName: found.team.name,
+          orgUnitId: found.orgUnitId,
+          humanManagerId: found.team.managerMemberId,
+        })
+        .catch((error: unknown) => {
+          // Không tạo được (thiếu người thật hợp lệ, model không được phép…): giữ hành vi cũ là chặn task NO_AI_MANAGER.
+          if (error instanceof DomainError) return undefined;
+          throw error;
+        });
+      if (!created) return undefined;
+      return {
+        id: created.id,
+        kind: created.kind,
+        status: created.status,
+        homeOrgUnitId: created.homeOrgUnitId,
+        teamIds: created.teamIds,
+        manager: created.manager,
+      };
     }
     return pickDecomposer({ assignee: { kind: task.assigneeKind, id: task.assigneeId }, employees });
   }
@@ -300,6 +364,65 @@ export class OrchestrationService implements OrchestrationEngine {
 
   async applyReviewResult(ctx: RequestContext, taskId: string, result: ReviewResult): Promise<void> {
     await this.reviewFlow.applyReviewResult(ctx, taskId, result);
+  }
+
+  async applyTaskProposal(
+    ctx: RequestContext,
+    taskId: string,
+    proposal: TaskProposal | { failed: true; reason: string },
+  ): Promise<void> {
+    if ('failed' in proposal) {
+      await this.tasks.updateDraft(ctx, taskId, {}, { proposalStatus: 'failed' });
+      return;
+    }
+    const parsed = taskProposalSchema.safeParse(proposal);
+    // Đề xuất sai (thiếu tiêu chí, deadline đã qua…) coi như lỗi: CEO vẫn sửa tay được, task không đổi trạng thái.
+    if (!parsed.success || new Date(parsed.data.deadline).getTime() <= Date.now()) {
+      await this.tasks.updateDraft(ctx, taskId, {}, { proposalStatus: 'failed' });
+      return;
+    }
+    const { title, acceptanceCriteria, expectedOutput, deadline, priority } = parsed.data;
+    await this.tasks.updateDraft(
+      ctx,
+      taskId,
+      { title, acceptanceCriteria, expectedOutput, deadline, priority },
+      { proposalStatus: 'ready' },
+    );
+  }
+
+  async listOperations(ctx: RequestContext, taskId: string): Promise<TaskOperation[]> {
+    const task = await this.tasks.get(ctx, taskId);
+    if (task.assigneeKind !== 'ai_employee') return [];
+    const assignee = await this.employees.get(ctx, task.assigneeId).catch(() => null);
+    if (assignee?.roleTemplateKey !== CEO_ASSISTANT_TEMPLATE_KEY) return [];
+    const rows = await inTenant(ctx, (tx) => this.repo.listInvocationsOfTask(tx, ctx.companyId, taskId));
+    return rows
+      .filter((r) => OPERATION_ACTIONS.has(r.actionType) && r.actionType !== 'company.query')
+      .map((r) => {
+        const result = (r.result ?? {}) as Record<string, unknown>;
+        const input = (r.input ?? {}) as Record<string, unknown>;
+        const source = { ...input, ...result };
+        const target = TARGET_FIELDS.map(([kind, field]) => [kind, source[field] ?? source.id] as const).find(
+          ([, id]) => typeof id === 'string',
+        );
+        const kindFromInput =
+          typeof input.targetKind === 'string' ? (input.targetKind as string) : undefined;
+        const targetId =
+          typeof input.targetId === 'string' ? input.targetId : (target?.[1] as string | undefined);
+        const approvalRequestId =
+          typeof result.approvalRequestId === 'string' ? result.approvalRequestId : undefined;
+        return {
+          toolInvocationId: r.id,
+          actionType: r.actionType,
+          permissionLevel: r.permissionLevel,
+          status: r.status,
+          summary: typeof result.summary === 'string' ? result.summary : `${r.actionType} → ${r.status}`,
+          ...(targetId ? { targetKind: kindFromInput ?? target?.[0] ?? 'unknown', targetId } : {}),
+          ...(approvalRequestId ? { approvalRequestId } : {}),
+          ...(r.adapterMode ? { adapterMode: r.adapterMode } : {}),
+          ...(r.status === 'succeeded' ? { executedAt: r.updatedAt.toISOString() } : {}),
+        };
+      });
   }
 
   // --- trạng thái run ---
@@ -677,7 +800,17 @@ export class OrchestrationService implements OrchestrationEngine {
     let unknownOutcome = false;
     for (const inv of stuck) {
       const adapter = this.adapters?.find(inv.actionType);
-      const state = adapter ? await adapter.lookup(inv.idempotencyKey) : 'unknown';
+      const state = adapter
+        ? await adapter.lookup(inv.idempotencyKey, {
+            companyId: ctx.companyId,
+            traceId: ctx.traceId,
+            actionType: inv.actionType,
+            employeeId: run.aiEmployeeId,
+            runId: run.id,
+            taskId: run.taskId,
+            input: inv.input,
+          })
+        : 'unknown';
       const status = state === 'succeeded' ? 'succeeded' : state === 'failed' ? 'failed' : 'unknown';
       if (status === 'unknown') unknownOutcome = true;
       await inTenant(ctx, (tx) =>
@@ -716,6 +849,13 @@ export class OrchestrationService implements OrchestrationEngine {
         : 'Worker ngừng gửi heartbeat nên lượt chạy bị coi là gián đoạn',
     });
     await this.budget.releaseRun(ctx, run.id);
+    if (run.purpose === 'propose') {
+      // Run đề xuất không đổi trạng thái task: chỉ đánh dấu đề xuất lỗi để CEO sửa tay.
+      await this.applyTaskProposal(SYSTEM(ctx), run.taskId, { failed: true, reason: code }).catch(
+        () => undefined,
+      );
+      return false;
+    }
     await this.blockTask(ctx, run.taskId, code);
     return false;
   }

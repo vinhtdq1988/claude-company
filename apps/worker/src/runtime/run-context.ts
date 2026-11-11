@@ -22,6 +22,10 @@ export type RunState = {
   requiresReview: boolean;
   /** Yêu cầu phê duyệt run đang chờ; có giá trị thì run sẽ tạm dừng (`waiting_approval`) khi agent kết thúc lượt. */
   pendingApprovalId?: string;
+  /** Số lời gọi tool ghi của CEO AI Assistant trong run (chốt chặn `ASSISTANT_MAX_OPS_PER_RUN`, R14 Decision 12). */
+  writeOps?: number;
+  /** Có giá trị: run kết thúc bằng task `blocked` với mã này (ví dụ vượt số thao tác tối đa của một run). */
+  blockedReason?: string;
 };
 
 export type RunContext = {
@@ -40,6 +44,12 @@ export type RunContext = {
 
 /** Hàm thực thi một tool nội bộ/workspace; ném lỗi nếu thất bại. Kết quả trả cho agent. */
 export type ToolHandler = (run: RunContext, input: unknown) => Promise<unknown>;
+
+/**
+ * Điều kiện kiểm tra TRƯỚC khi đánh giá quyền và tạo approval của một tool (C1/C3 của CEO AI Assistant). Ném
+ * `DomainError` mang mã `ASSISTANT_*` thì ToolBroker ghi ledger `denied` với đúng tên hành động và từ chối lời gọi.
+ */
+export type ToolGuard = (run: RunContext, input: unknown) => Promise<void>;
 
 /**
  * Cổng xử lý hành động `human_approval`. Agent không bao giờ tự thực thi: cổng chỉ tạo đề xuất.

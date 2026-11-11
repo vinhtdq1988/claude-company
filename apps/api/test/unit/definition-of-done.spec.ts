@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { TOOL_INPUT_SCHEMAS } from '@claude-company/contracts';
 import { ACTION_CATALOG, getActionDefinition } from '@claude-company/policy';
 import { APPROVAL_ACTION_TYPES } from '../../../worker/src/tools/adapters/registry';
+import { INTERNAL_ACTION_TYPES } from '../../../worker/src/tools/adapters/internal-ops.adapter';
 
 /**
  * Definition of Done của constitution (T199), phần kiểm máy được: mọi action có mức quyền, hành động Human
@@ -20,7 +21,9 @@ describe('Definition of Done (T199)', () => {
 
   it('action có tác dụng ra ngoài hoặc không hoàn tác được có floor human_approval và có adapter', () => {
     const sensitive = ACTION_CATALOG.filter((a) => a.floor === 'human_approval');
-    expect(sensitive.map((a) => a.actionType).sort()).toEqual([...APPROVAL_ACTION_TYPES].sort());
+    expect(sensitive.map((a) => a.actionType).sort()).toEqual(
+      [...APPROVAL_ACTION_TYPES, ...INTERNAL_ACTION_TYPES].sort(),
+    );
     for (const action of sensitive) {
       expect(action.idempotency, action.actionType).toBe('dedupe');
     }

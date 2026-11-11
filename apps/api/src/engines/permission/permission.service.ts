@@ -39,7 +39,10 @@ export class PermissionService implements PermissionEngine {
     req: { employeeId: string; actionType: string; input: unknown },
   ): Promise<{ level: PermissionLevel; reason: string }> {
     const employee = await this.employees.get(ctx, req.employeeId);
-    const orgUnitChain = await this.organization.resolveOrgUnitChain(ctx, employee.homeOrgUnitId);
+    // CEO AI Assistant không thuộc đơn vị nào nên chỉ chịu policy cấp công ty và của chính nó.
+    const orgUnitChain = employee.homeOrgUnitId
+      ? await this.organization.resolveOrgUnitChain(ctx, employee.homeOrgUnitId)
+      : [];
     const rows = await inTenant(ctx, (tx) =>
       tx
         .select()

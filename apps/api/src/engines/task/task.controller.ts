@@ -5,6 +5,7 @@ import {
   HttpCode,
   Inject,
   Param,
+  Patch,
   Post,
   Query,
   StreamableFile,
@@ -14,6 +15,7 @@ import {
   DomainError,
   TASK_STATUSES,
   taskDecisionSchema,
+  taskDraftPatchSchema,
   taskListQuerySchema,
   taskMessageBodySchema,
   taskTransitionSchema,
@@ -29,8 +31,10 @@ import {
   type Task,
   type TaskDecisionBody,
   type TaskDetail,
+  type TaskDraftPatch,
   type TaskEngine,
   type TaskMessage,
+  type TaskOperation,
   type TaskStatus,
   type TaskTransitionBody,
 } from '@claude-company/contracts';
@@ -83,7 +87,7 @@ export class TaskController {
     private readonly organization: Pick<OrganizationEngine, 'resolveManagedScope'>,
     @Inject(COMMUNICATION_ENGINE) private readonly communication: CommunicationEngine,
     @Inject(ORCHESTRATION_ENGINE)
-    private readonly orchestration: Pick<OrchestrationEngine, 'listExecutedActions'>,
+    private readonly orchestration: Pick<OrchestrationEngine, 'listExecutedActions' | 'listOperations'>,
     private readonly repo: TaskRepository,
     private readonly storage: StorageService,
   ) {}
@@ -120,6 +124,7 @@ export class TaskController {
       deadlineBefore: query.deadlineBefore,
       rootOnly: true,
       scope,
+      withAssignerLabel: true,
       cursor: query.cursor,
       limit: query.limit,
     });
@@ -151,6 +156,21 @@ export class TaskController {
   @MemberScope()
   get(@Ctx() ctx: RequestContext, @Param('id') id: string): Promise<TaskDetail> {
     return this.authorizeTask(ctx, 'task.read', id);
+  }
+
+  /**
+   * Sửa task nháp (FR-047): CEO xem và chỉnh đề xuất của CEO AI Assistant trước khi giao. Cùng quyền giao việc trên
+   * assignee như lúc tạo; task đã rời `draft` → `409 TASK_NOT_DRAFT`, đề xuất đang soạn → `409 PROPOSAL_PENDING`.
+   */
+  @Patch('tasks/:id')
+  @MemberScope()
+  async updateDraft(
+    @Ctx() ctx: RequestContext,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(taskDraftPatchSchema)) body: TaskDraftPatch,
+  ): Promise<Task> {
+    await this.authorizeTask(ctx, 'task.manage', id);
+    return this.tasks.updateDraft(ctx, id, body);
   }
 
   /** Chuyển trạng thái do người dùng kích hoạt: `assign`, `cancel`, `resume`. */
@@ -187,6 +207,14 @@ export class TaskController {
   ): Promise<ExecutedAction[]> {
     await this.authorizeTask(ctx, 'task.read', id);
     return this.orchestration.listExecutedActions(ctx, id);
+  }
+
+  /** Thao tác điều hành của CEO AI Assistant trên task (ledger, approval, adapter); task khác trả `[]`. */
+  @Get('tasks/:id/operations')
+  @MemberScope()
+  async operations(@Ctx() ctx: RequestContext, @Param('id') id: string): Promise<TaskOperation[]> {
+    await this.authorizeTask(ctx, 'task.read', id);
+    return this.orchestration.listOperations(ctx, id);
   }
 
   @Get('tasks/:id/messages')

@@ -51,8 +51,8 @@ export function EmployeeListPage({ companyId, onOpen, onNew }: Props) {
 
   const units = flattenUnits(chart.data?.roots ?? []);
   const teams = units.flatMap((u) => u.teams);
-  const unitName = (id: string, tree?: OrgChart) =>
-    (tree ? findUnit(tree, id)?.name : undefined) ?? '—';
+  const unitName = (id: string | null, tree?: OrgChart) =>
+    (tree && id ? findUnit(tree, id)?.name : undefined) ?? '—';
 
   return (
     <section className="employees">

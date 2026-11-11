@@ -72,7 +72,8 @@ export function EmployeeDetailPage({ companyId, employeeId, onBack }: Props) {
     .flatMap((u) => u.teams)
     .filter((team) => e.teamIds.includes(team.id))
     .map((team) => team.name);
-  const unit = chart.data ? findUnit(chart.data, e.homeOrgUnitId)?.name : undefined;
+  const unit =
+    chart.data && e.homeOrgUnitId ? findUnit(chart.data, e.homeOrgUnitId)?.name : undefined;
   const archived = e.status === 'archived';
 
   const confirmArchive = () => {

@@ -317,8 +317,71 @@ Ba lỗi cấu hình tìm thấy khi rà soát tĩnh (chưa từng chạy đư�
 | Mở Virtual Office trên trình duyệt, kiểm tra bằng mắt, đo ~60 fps, SC-005 ≤ 3 giây p95 (T163a mục 3.1, 3.8) | **Mở** (T195) |
 | T088 (6 ca trên container thật), T111/T111a (build và chạy `sandbox-runner`, `egress-proxy`), T131 (E2E duyệt) | **Mở**: cần Docker/trình duyệt |
 | T090 (spike Agent SDK thật), kể cả quyết định bật `SDK_RESUME_AFTER_CRASH` | **Mở**: cần `ANTHROPIC_API_KEY` |
+| Rà soát T244 (US9) | **Đã xử lý**: không có vi phạm Nguyên tắc I–VIII; điểm theo dõi còn lại ghi ở mục T244 |
 | Đối chiếu lại giá model (T077a mục 3.1) trước khi dùng số liệu chi phí | **Mở**: chưa đối chiếu với trang giá chính thức |
 | Chi phí `EmployeeEngine.get` trên đường nóng (T077a 3.2) | **Mở, chưa đo**; chưa có dấu hiệu chậm trong test |
 | Khóa phạm vi theo công ty của `TaskScheduler` (US6 3.2), nhật ký `employee_status_change` chưa dọn, chiếu office lần đầu chậm (T163a 3.6, 3.7) | **Chấp nhận ở v1.0**, theo dõi khi tăng quy mô |
 | Yêu cầu bị hủy khi task rời In Progress, mở rộng interface ngoài D4 | **Đã xử lý**: đã ghi vào data-model và contracts |
+
+---
+
+## US9 (T205–T243) – Kiểm chứng CEO AI Assistant
+
+**Ngày**: 2026-11-10 | **Phạm vi**: Phase 9a của Spec Kit (US9, ưu tiên P2) cùng bổ sung FR-016a (tự tạo AI Manager cho Team).
+
+### 1. Trạng thái kiểm chứng
+
+| Hạng mục | Kết quả | Ghi chú |
+|---|---|---|
+| `tsc --noEmit` mọi tsconfig (gốc, api, worker, web, 4 package), `eslint .` | Đạt | đợt này sửa thêm 1 lỗi `require-yield` (`assistantOps` của `FakeModelProvider` không có `yield`, đổi thành hàm `async` thường) và 1 lỗi kiểu của `makeTask` (thiếu `proposalStatus`) đã có sẵn từ trước |
+| Unit test (`vitest --project unit`) | Đạt 453/453 | gồm `company-ops-catalog.spec.ts` (T205), `company-ops-tool-specs.spec.ts` (T206), `office-reducer`/`office-layout` (T210), `definition-of-done`, `openapi` |
+| `tests/contract/ceo-assistant-employee.spec.ts` (T207) | Đạt 9/9 | |
+| `tests/contract/task-draft-proposal.spec.ts` (T208) | Đạt 6/6 | |
+| `tests/contract/company-ops.spec.ts` (T209) | Đạt 7/7 | |
+| `tests/integration/ceo-assistant.spec.ts` (T211) | Đạt 7/7 | AS1, AS2, AS3, AS4, AS8 |
+| `tests/integration/ceo-assistant-operations.spec.ts` (T212) | Đạt 14/14 | AS5 (cả ba hành động Human Approval, `ORG_UNIT_NOT_EMPTY`, `email.send` qua dry-run), tạm ngưng giữa chừng, worker restart, SC-017, ngân sách (chặn, cảnh báo 80%, `org_unit_id` null), đối tượng ngoài phạm vi |
+| `tests/security/ceo-assistant-boundary.spec.ts` (T213, SC-015) | Đạt 26/26 | gồm lớp HTTP (Manager `403`, `via` bị bỏ qua) |
+| `tests/contract/employee-engine.spec.ts` (T202) | Đạt 31/31 | 6 ca mới cho `provisionTeamManager` |
+| `tests/integration/task-decomposition.spec.ts` (T202) | Đạt 18/18 | 6 ca mới cho FR-016a |
+| E2E Q14–Q18 (T214), chạy thủ công Q1–Q18 (T197) | **Không làm** | quyết định bỏ qua e2e/test thủ công để giảm chi phí (constitution v1.1.0, mục Kiểm thử) |
+
+Mọi test DB chạy bằng `node scripts/test-local.mjs <file>` (từng file một). Worker chết ở T212 được mô phỏng như T177 (run `running` quá hạn heartbeat, job mất khỏi hàng đợi) nhưng sau khi đã có một thao tác ghi `succeeded` trong ledger; chưa kill tiến trình thật.
+
+### 2. Điểm cần chú ý khi chạy test (phát hiện lúc viết T212/T213/T202)
+
+1. **`ToolBroker` khóa run sau lời gọi chờ duyệt**: sau khi một tool trả `pending_approval`, mọi tool khác của run đó trả `run_locked` (kể cả tool chỉ đọc). Đúng thiết kế (run dừng chờ duyệt) nên test kiểm 100% hành động Human Approval dùng một run riêng cho mỗi hành động và còn khẳng định run bị khóa.
+2. **Engine không tự kiểm quyền Manager ở `suspend`/`update`**: quyền được cưỡng chế ở controller bằng `@RequireScope` (như mọi engine khác); riêng `getCeoAssistant` kiểm tra trong engine. Vì vậy ca "Manager nhận 403" của T213 nằm ở lớp HTTP, không phải gọi engine trực tiếp.
+3. **Công ty không còn CEO hoạt động thì không ai nhận được thông báo**: ca FR-016a "không có người thật hợp lệ" vẫn `blocked`/`NO_AI_MANAGER` nhưng không có notification `escalation` (bộ định tuyến ghi log lỗi "Công ty không có CEO đang hoạt động để nhận thông báo"). Ca `allowed_models` chặn model của mẫu `ai_manager` thì có `escalation`.
+
+---
+
+## T244 – Rà soát constitution khi thêm User Story 9
+
+**Ngày rà soát**: 2026-11-10 | **Constitution**: v1.1.0 | **Căn cứ**: mục Governance → "Rà soát tuân thủ". **Phạm vi**: CEO AI Assistant (FR-046–FR-049), các tool điều hành, `InternalOpsAdapter`, run `propose` và bổ sung FR-016a.
+
+### 1. Đối chiếu Nguyên tắc liên quan
+
+| Nguyên tắc | Điểm rà soát | Bằng chứng | Kết luận |
+|---|---|---|---|
+| I. Công việc thật | Thao tác điều hành thay đổi dữ liệu thật qua interface engine; `org.archive`, `employee.archive`, `task.cancel` thực thi thật sau khi duyệt (`adapter_mode = internal`, không nhãn "dry-run"). Báo cáo của trợ lý chỉ lấy từ kết quả `company.query`, khớp `/dashboard` và `/usage`. Khi yêu cầu chưa rõ, trợ lý hỏi lại bằng `task_message` và không thay đổi dữ liệu. Không có chat độn | `ceo-assistant-operations.spec.ts` (AS5, SC-017), `ceo-assistant.spec.ts` (AS8) | Phù hợp |
+| II. Con người lãnh đạo (NON-NEGOTIABLE) | (a) **Một đường quyền duy nhất**: mọi lời gọi đi qua `ToolBroker` → `PermissionEngine`; `via` chỉ chú thích audit (không có tham chiếu `via` nào trong `engines/permission/`), request HTTP không đặt được `via`. (b) **Trợ lý không là reviewer hay approver**: reviewer là AI Manager độc lập (`kind = manager`) còn trợ lý bị ép `kind = employee`; người duyệt luôn là người thật và `decideApproval` với ngữ cảnh AI bị từ chối. (c) **Không tự nâng quyền**: `approval.decide`, `budget.update`, `policy.update`, `employee.grant_tools`, `member.manage`, `task.decide`, `task.resume` là `restricted` có tên riêng trong ledger; input tool strict, không nhận `toolGrants`/`modelId`/`managerId`; `employee.create` từ chối mẫu `ceo_assistant`. (d) **Human Approval** cho `org.archive`, `employee.archive`, `task.cancel`, `email.send` bị giữ kể cả khi nội dung task, tin nhắn, kết quả tool ép bỏ qua. (e) Task trợ lý tạo ở `draft` nếu tiêu chí không trích nguyên văn lời CEO; `created_by_member_id` vẫn là CEO. (f) Chuỗi quản lý: manager của trợ lý là CEO | `ceo-assistant-boundary.spec.ts` (26 ca), `company-ops.spec.ts` (C1, C3, C6), `ceo-assistant-employee.spec.ts`, `company-ops-catalog.spec.ts`, `company-ops-tool-specs.spec.ts` | Phù hợp |
+| III. Tổ chức, cô lập | Trợ lý nằm ngoài `ManagedScope` của Manager thường: Manager nhận `403` ở mọi route `/ceo-assistant` và không thấy trợ lý ở danh sách nhân viên, Virtual Office, Dashboard theo phạm vi; đối tượng công ty khác → `NOT_FOUND` và không bị tác động chéo công ty. `usage_ledger.org_unit_id` null, bộ lọc `orgUnitId` bỏ qua dòng này nhưng tổng toàn công ty vẫn tính | `ceo-assistant-boundary.spec.ts` (HTTP và chéo công ty), `ceo-assistant-operations.spec.ts` | Phù hợp |
+| V. Chi phí và năng lực | Ngân sách áp dụng cho trợ lý như mọi nhân viên, không có ngoại lệ: hết ngân sách → task `blocked`/`BUDGET_EXCEEDED` + thông báo `budget_blocked`, không chi tiêu nào xảy ra ở lần chạy bị chặn; ngưỡng 80% cảnh báo đúng một lần; run `propose` không chiếm slot `max_concurrent_tasks`; `ASSISTANT_MAX_OPS_PER_RUN` giới hạn thao tác ghi | `ceo-assistant-operations.spec.ts` (US9-AS7), `company-ops.spec.ts` (C6), `task-draft-proposal.spec.ts` | Phù hợp |
+| VI. Độc lập model, tách engine | **Không thêm engine mới** (`apps/api/src/engines/` vẫn chín module). `company-ops.ts` chỉ nhận `Pick` từ interface engine và `DashboardReader`, không import schema bảng; lint ranh giới đạt. Run `propose` và `execute` đi qua `ModelGateway`; không import `@anthropic-ai/*` ngoài `providers/` | `eslint .` đạt, `definition-of-done.spec.ts` | Phù hợp |
+| VII. Bằng chứng, tin cậy, quan sát | Mọi lời gọi tool (cả bị từ chối) có `tool_invocation` và `run_step`; `domain_event.payload.actingVia = { employeeId, runId, taskId }` có ở mọi thay đổi do trợ lý thực hiện và vắng ở thao tác của người dùng. Chống lặp: nhóm `dedupe` không tạo trùng khi resume/retry; `InternalOpsAdapter.lookup` coi đối tượng đã lưu trữ/hủy là `succeeded`. Worker restart giữa chuỗi: thao tác `succeeded` không lặp, `GET /tasks/{id}/operations` cho biết trạng thái từng thao tác để `resume` hoặc `cancel`. Task của trợ lý vẫn qua review độc lập của AI Manager và phê duyệt của CEO | `company-ops.spec.ts`, `ceo-assistant-operations.spec.ts`, `ceo-assistant.spec.ts` (AS2) | Phù hợp |
+| VIII. Tăng dần, MVP | Trợ lý thuộc Phase 2 (spec ghi rõ: chỉ là một mẫu AI Employee bổ sung, YAGNI). Không chạy theo lịch, không Daily Report, không Project, không thông báo ngoài ứng dụng (các tên này bị `restricted`, có test); không thêm XP/Level. FR-016a chỉ tạo AI Manager khi giao cho Team, không tạo cho task giao trực tiếp hay bước chọn reviewer | `ceo-assistant-boundary.spec.ts`, `task-decomposition.spec.ts` (T202) | Phù hợp |
+
+**Ràng buộc công nghệ và quy trình**: không thêm dependency; không secret trong payload hay ledger; hai biến cấu hình mới (`ASSISTANT_DEFAULT_DEADLINE_HOURS`, `ASSISTANT_MAX_OPS_PER_RUN`) có trong `config.ts`, `docker/.env.example` và README; mọi `ActionType` mới có mức quyền trong `ACTION_CATALOG` (Definition of Done).
+
+### 2. Điểm cần chú ý và theo dõi
+
+1. **Quyền Manager chỉ được cưỡng chế ở controller** (mục 2.2 của phần US9 phía trên): nếu sau này có đường gọi engine không qua controller (job, script), đường đó phải tự kiểm quyền. Hiện chỉ worker gọi engine, với ngữ cảnh `system` hoặc ngữ cảnh CEO + `via` do `delegatedContext` dựng từ dữ liệu hệ thống.
+2. **An toàn của ngữ cảnh "thay mặt CEO" dựa hoàn toàn vào `delegatedContext`**: điều kiện C1 (nhân viên của run là `ceo_assistant` đang `active`, là assignee của task, task do CEO đang hoạt động tạo). Đã có test cho từng vế và cho trường hợp tạm ngưng giữa chừng; mọi tool điều hành mới phải đi qua guard C1.
+3. **Hành động Human Approval nhắm vào đối tượng công ty khác**: test T213 chỉ khẳng định kết quả cuối (đối tượng không bị đổi dù yêu cầu được duyệt); chưa khẳng định yêu cầu duyệt có được tạo ra hay không. Nếu muốn người duyệt không phải xem yêu cầu vô nghĩa thì cần kiểm tra đối tượng ngay lúc đề xuất.
+4. **Chưa kiểm chứng với model thật**: mọi test dùng `FakeModelProvider`. Hành vi thật của model trước prompt injection, chất lượng đề xuất của run `propose` và độ lệch ≤ 1% của báo cáo do model viết (SC-017) cần đo khi có `ANTHROPIC_API_KEY` (T090, T198).
+5. **Bước "review bởi người khác tác giả"** (constitution, mục Review) chưa kiểm chứng được vì repo chưa có PR.
+
+### 3. Kết luận
+
+Không phát hiện vi phạm Nguyên tắc I–VIII ở phạm vi US9, và constitution v1.1.0 vẫn phản ánh đúng thực tế sản phẩm nên **không cần sửa đổi**. Các điều kiện mở còn lại là những điều kiện đã ghi ở T200 (Redis, Docker, `ANTHROPIC_API_KEY`, người dùng thật) cộng với điểm 4 và 5 ở trên.
 | T197 (chạy thủ công Q1–Q12), T198 (thử với ≥ 10 người, SC-001, SC-013) | **Mở**: cần người và trình duyệt |

@@ -6,7 +6,7 @@
 
 **Status**: Draft
 
-**Phase (Lộ trình MVP)**: Phase 1 (Company, Department, Employee, Organization) + Phase 2 (AI Employee, AI Manager, Task Assignment) + Phase 3 (Virtual Office, Animation, Realtime). Phase 4–6 nằm ngoài phạm vi v1.0 (xem mục Assumptions). Ngoại lệ có chủ đích: review theo từng task (FR-018, FR-019, FR-022, do Nguyên tắc II bắt buộc ngay từ Phase 2) và cột mốc Achievement cơ bản (FR-045, Nguyên tắc VIII cho phép gamification ở mức tối thiểu). Company/Department/Team Chat và XP/Level vẫn ngoài phạm vi.
+**Phase (Lộ trình MVP)**: Phase 1 (Company, Department, Employee, Organization) + Phase 2 (AI Employee, AI Manager, Task Assignment, CEO AI Assistant) + Phase 3 (Virtual Office, Animation, Realtime). Phase 4–6 nằm ngoài phạm vi v1.0 (xem mục Assumptions). Ngoại lệ có chủ đích: review theo từng task (FR-018, FR-019, FR-022, do Nguyên tắc II bắt buộc ngay từ Phase 2) và cột mốc Achievement cơ bản (FR-045, Nguyên tắc VIII cho phép gamification ở mức tối thiểu). Company/Department/Team Chat và XP/Level vẫn ngoài phạm vi.
 
 **Input**: User description: "Triển khai dự án v1.0"
 
@@ -171,6 +171,27 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 
 ---
 
+### User Story 9 - CEO AI Assistant điều hành công ty cùng CEO (Priority: P2)
+
+CEO giao cho CEO AI Assistant – một AI Employee đặc biệt báo cáo trực tiếp cho CEO – các công việc điều hành công ty hằng ngày: nắm tình hình công ty, giao việc thay mặt CEO, dựng/chỉnh cơ cấu và nhân sự AI, theo dõi chi phí và đề xuất cách xử lý blocker. CEO chỉ cần nêu yêu cầu bằng ngôn ngữ tự nhiên thay vì tự đi qua từng màn hình; trợ lý thực thi trực tiếp các thao tác điều hành hợp lệ trong phạm vi quyền của CEO. Các quyết định thuộc về con người (phê duyệt kết quả, nâng giới hạn, đổi chính sách quyền) vẫn do CEO tự thực hiện.
+
+**Why this priority**: Giúp đơn giản hóa việc vận hành công ty và giảm số thao tác thủ công của CEO, nhưng chỉ có ý nghĩa khi vòng lặp lõi đã chạy (US1–US4) và đã có dữ liệu chi phí, lịch sử thực thi để trợ lý dựa vào (US6, US7). Trợ lý là lớp tiện lợi đặt trên các thao tác sẵn có, không thay thế AI Manager hay bước Human Approval.
+
+**Independent Test**: Có thể kiểm thử bằng cách tạo CEO AI Assistant từ mẫu, gửi yêu cầu "tổng hợp tình hình công ty tuần này" và nhận báo cáo khớp số liệu Company Dashboard; gửi yêu cầu giao một việc cho Development Team và thấy task được giao qua AI Manager; gửi yêu cầu lưu trữ một phòng ban và thấy hệ thống tạo Approval Request; gửi yêu cầu nâng ngân sách và thấy bị từ chối vì thuộc mức Restricted.
+
+**Acceptance Scenarios**:
+
+1. **Given** công ty chưa có CEO AI Assistant, **When** CEO tạo trợ lý từ mẫu vai trò, **Then** hồ sơ được điền sẵn, manager trực tiếp là CEO, nhân vật hiển thị ở CEO Office; việc tạo thêm một trợ lý thứ hai khi trợ lý đầu còn hoạt động bị chặn.
+2. **Given** CEO AI Assistant đang hoạt động, **When** CEO gửi một yêu cầu điều hành bằng ngôn ngữ tự nhiên, **Then** hệ thống ghi yêu cầu thành một task giao cho trợ lý (người giao là CEO), CEO xác nhận hoặc chỉnh tiêu chí nghiệm thu trợ lý đề xuất, rồi trợ lý thực hiện và nộp artifact; task vẫn đi qua AI Manager xác nhận, AI Manager review và CEO phê duyệt như mọi task khác.
+3. **Given** CEO yêu cầu giao một việc cho một Team kèm tiêu chí nghiệm thu rõ ràng, **When** trợ lý xử lý yêu cầu, **Then** trợ lý tạo và giao task cho Team thay mặt CEO (người giao là CEO, tác nhân tạo là trợ lý) và AI Manager phụ trách phân rã như FR-016; trợ lý không tự phân rã hay tự chọn assignee thay AI Manager.
+4. **Given** yêu cầu của CEO không nêu tiêu chí nghiệm thu cho task cần giao, **When** trợ lý lập task, **Then** task giữ ở Draft kèm tiêu chí do trợ lý đề xuất và chỉ được giao sau khi CEO xác nhận.
+5. **Given** CEO yêu cầu lưu trữ một phòng ban hoặc gửi một email, **When** trợ lý thực hiện, **Then** hệ thống tạo Approval Request, tạm dừng hành động và thông báo cho người duyệt; hành động không được thực hiện cho đến khi người có thẩm quyền phê duyệt.
+6. **Given** CEO (hoặc nội dung trong task/artifact) yêu cầu trợ lý phê duyệt một kết quả, nâng giới hạn ngân sách, đổi chính sách quyền hoặc cấp thêm công cụ, **When** trợ lý cố thực hiện, **Then** hệ thống từ chối vì hành động thuộc mức Restricted và nêu rõ việc này phải do người thật làm.
+7. **Given** trợ lý tiêu thụ token tiệm cận hoặc sắp vượt giới hạn của mình, **When** hệ thống phát hiện, **Then** áp dụng cảnh báo và chặn như mọi nhân viên khác (FR-033), không có ngoại lệ cho trợ lý.
+8. **Given** một yêu cầu điều hành chưa đủ rõ để thực hiện an toàn, **When** trợ lý xử lý, **Then** trợ lý hỏi lại CEO ngay trong task thay vì đoán, và không thực hiện hành động thay đổi dữ liệu cho đến khi yêu cầu rõ.
+
+---
+
 ### Edge Cases
 
 - Điều gì xảy ra khi người quản lý duy nhất của một chuỗi quản lý bị gỡ hoặc tài khoản bị vô hiệu? Hệ thống phải chặn thao tác hoặc yêu cầu chỉ định người thật thay thế, vì mọi chuỗi quản lý AI phải kết thúc ở một người thật.
@@ -184,6 +205,9 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - Điều gì xảy ra khi người dùng xóa phòng ban/nhân viên đã có lịch sử task, chi phí và review? Dữ liệu lịch sử phải được giữ để phục vụ truy vết (lưu trữ thay vì xóa mất).
 - Điều gì xảy ra khi Virtual Office hiển thị 10 nhân viên cùng thay đổi trạng thái trong thời gian ngắn? Giao diện vẫn phản hồi, không bỏ sót hay đảo thứ tự trạng thái.
 - Điều gì xảy ra khi mức tiêu thụ vượt giới hạn do một lần gọi model đơn lẻ rất lớn? Hệ thống phải chặn các lần chạy tiếp theo, chuyển lên người thật và ghi nhận mức vượt.
+- Điều gì xảy ra khi CEO AI Assistant bị tạm ngưng hoặc lưu trữ khi đang xử lý yêu cầu điều hành? Áp dụng FR-008: run dừng ở bước an toàn tiếp theo, task chuyển Blocked; các thay đổi trợ lý đã thực hiện trước đó vẫn giữ nguyên và truy vết được, không tự hoàn tác ngầm.
+- Điều gì xảy ra khi yêu cầu điều hành vượt phạm vi quyền của CEO, nhắm sang công ty khác hoặc cần chức năng ngoài v1.0 (Project, email/push ngoài ứng dụng, Daily Report)? Hệ thống từ chối ở server và nêu rõ lý do; trợ lý không dùng đường vòng để thực hiện.
+- Điều gì xảy ra khi trợ lý thực hiện dở một chuỗi thao tác điều hành thì gặp lỗi? Các thao tác đã hoàn tất không bị thực hiện lại (FR-044), thao tác chưa xong được đánh dấu rõ trong task để CEO chọn tiếp tục hoặc hủy.
 
 ## Requirements *(mandatory)*
 
@@ -204,7 +228,7 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - **FR-008**: Hệ thống MUST cho phép tạo AI Employee từ mẫu vai trò hoặc cấu hình tùy chỉnh, và chỉnh sửa, tạm ngưng hoặc lưu trữ nhân viên sau khi tạo. Nhân viên bị tạm ngưng MUST không được bắt đầu run mới; run đang chạy MUST dừng ở bước an toàn tiếp theo và task chuyển Blocked với lý do tạm ngưng; task đang chờ slot được giữ nguyên và MUST tự động được xếp chạy khi nhân viên hoạt động lại. Task đã Blocked MUST không được tiếp tục khi assignee còn bị tạm ngưng.
 - **FR-009**: Hồ sơ AI Employee MUST gồm: Name/Avatar, Position/Department, Personality, Skills/Seniority (Junior, Middle, Senior, Expert), AI Model, System Prompt, Tools, Manager, Status/Performance.
 - **FR-010**: Hệ thống MUST cho phép chọn model AI theo từng AI Employee trong danh sách model được phép, và việc đổi model của một nhân viên MUST không đòi hỏi thay đổi nhân viên khác hay chức năng khác của hệ thống.
-- **FR-011**: Hệ thống MUST phân biệt AI Manager (nhận mục tiêu, chia nhỏ, phân công, theo dõi tiến độ và workload, review, tổng hợp, báo cáo) với AI Employee (nhận task, thực hiện theo chuyên môn, dùng công cụ được cấp quyền, báo cáo kết quả).
+- **FR-011**: Hệ thống MUST phân biệt AI Manager (nhận mục tiêu, chia nhỏ, phân công, theo dõi tiến độ và workload, review, tổng hợp, báo cáo) với AI Employee (nhận task, thực hiện theo chuyên môn, dùng công cụ được cấp quyền, báo cáo kết quả). CEO AI Assistant (FR-046) là một AI Employee thường, không phải AI Manager: không phân rã mục tiêu, không review và không thay thế AI Manager.
 - **FR-012**: Hệ thống MUST cho phép cấu hình theo từng employee cách thực hiện công việc phù hợp vai trò (vai trò làm việc với mã nguồn so với vai trò tài liệu/phân tích), không giả định một cách duy nhất cho toàn hệ thống. Trong v1.0, AI Manager MUST dùng runtime tài liệu/phân tích vì bước phân rã và review cần structured output đã kiểm chứng.
 - **FR-013**: AI Employee MUST lưu giữ lịch sử làm việc và ngữ cảnh liên quan của mình; nội dung này MUST chỉ truy cập được trong phạm vi tổ chức/team/nhân viên được phép, không rò rỉ khi chưa có quy tắc chia sẻ tường minh.
 
@@ -213,7 +237,7 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - **FR-014**: Mỗi task MUST có: mục tiêu, người giao, assignee, deadline, priority, acceptance criteria, đầu ra mong đợi và trạng thái.
 - **FR-015**: Người dùng MUST có thể giao task cho một AI Employee, một Team hoặc một Department trong phạm vi quản lý của mình. Task giao trực tiếp cho một AI Employee MUST qua bước AI Manager xác nhận phân công hoặc chia việc trước khi chạy (FR-016).
 - **FR-016**: Với mục tiêu giao cho Team/Department, AI Manager MUST phân tích, chia nhỏ thành task con, chọn nhân viên phù hợp theo chuyên môn và workload, và xử lý phụ thuộc giữa các task; người dùng MUST xem được kết quả phân rã. Task giao Team/Department MUST được phân rã thành ít nhất một task con; kế hoạch giữ nguyên phân công hoặc không có task con MUST làm task chuyển Blocked và người quản lý MUST được báo.
-- **FR-016a**: AI Manager phụ trách là AI Manager thuộc Team được giao; nếu không có thì là AI Manager có phòng ban chính là đơn vị đó; nếu vẫn không có, task MUST chuyển Blocked và người quản lý MUST được báo. Với task giao trực tiếp cho AI Employee, AI Manager phụ trách chọn theo thứ tự ở FR-018 (nhân viên được giao là AI Manager thì tự đảm nhiệm bước này); AI Manager có thể xác nhận giữ nguyên phân công hoặc chia thành task con; không có AI Manager nào thì task MUST chuyển Blocked. Khi nhiều AI Manager cùng khớp ở một bậc chọn (FR-016a, FR-018), hệ thống lấy AI Manager có `id` nhỏ nhất (cũ nhất). Với task giao Team, bậc "phòng ban" là department chứa Team đó.
+- **FR-016a**: AI Manager phụ trách là AI Manager thuộc Team được giao; nếu không có thì là AI Manager có phòng ban chính là đơn vị đó; nếu vẫn không có, hệ thống MUST tự tạo một AI Manager cho Team (mẫu `ai_manager`, thuộc Team và department chứa Team, manager trực tiếp là người quản lý Team hoặc CEO) rồi dùng AI Manager đó; chỉ khi không tạo được thì task MUST chuyển Blocked và người quản lý MUST được báo. Một AI Manager có thể thuộc nhiều Team. Với task giao trực tiếp cho AI Employee, AI Manager phụ trách chọn theo thứ tự ở FR-018 (nhân viên được giao là AI Manager thì tự đảm nhiệm bước này); AI Manager có thể xác nhận giữ nguyên phân công hoặc chia thành task con; không có AI Manager nào thì task MUST chuyển Blocked. Khi nhiều AI Manager cùng khớp ở một bậc chọn (FR-016a, FR-018), hệ thống lấy AI Manager có `id` nhỏ nhất (cũ nhất). Với task giao Team, bậc "phòng ban" là department chứa Team đó.
 - **FR-016b**: Task con kế thừa deadline và priority của task cha; assignee MUST thuộc phạm vi quản lý của người giao task cha. Task cha chuyển In Progress khi kế hoạch phân rã được áp dụng và chuyển In Review khi mọi task con Completed. Mỗi task con đi đủ vòng đời FR-020a, kể cả Human Approval, và task phụ thuộc chỉ bắt đầu khi task nó phụ thuộc đã Completed. Task con không qua bước xác nhận hay phân rã của AI Manager lần nữa (phân rã tối đa một cấp), vì AI Manager đã phân công khi lập kế hoạch.
 - **FR-016c**: Task con bị hủy thì task cha MUST chuyển Blocked với lý do `SUBTASK_CANCELLED` và người quản lý chỉ có thể hủy task cha. Hủy task cha MUST hủy mọi task con chưa kết thúc cùng các run và yêu cầu phê duyệt đang chờ của chúng.
 - **FR-017**: AI Employee MUST thực hiện task thật và trả về artifact hoặc kết quả có thể kiểm chứng; kết quả MUST được lưu và mở xem được.
@@ -244,7 +268,7 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 **Virtual Office và Dashboard (Phase 3)**
 
 - **FR-034**: Hệ thống MUST cung cấp Virtual Office 2D phong cách pixel art, có khu vực tương ứng với từng phòng ban đã tạo cùng CEO Office và Break Room.
-- **FR-035**: Mỗi nhân viên MUST hiển thị là một nhân vật ở khu vực phòng ban của mình, với trạng thái thuộc: Idle, Working, Thinking, Communicating, Meeting, Waiting Approval, Completed, Error/Blocked, Break. Trong v1.0, Meeting chưa có sự kiện nguồn nên không xuất hiện; Break chỉ dùng khi nhân viên bị tạm ngưng.
+- **FR-035**: Mỗi nhân viên MUST hiển thị là một nhân vật ở khu vực phòng ban của mình, với trạng thái thuộc: Idle, Working, Thinking, Communicating, Meeting, Waiting Approval, Completed, Error/Blocked, Break. Trong v1.0, Meeting chưa có sự kiện nguồn nên không xuất hiện; Break chỉ dùng khi nhân viên bị tạm ngưng. CEO AI Assistant (FR-046) hiển thị ở CEO Office thay vì khu vực phòng ban.
 - **FR-036**: Trạng thái nhân viên MUST suy ra từ sự kiện agent/task thật, MUST KHÔNG được sinh ngẫu nhiên hay dựng sẵn; hệ thống MUST không có chat giả hoặc animation giả.
 - **FR-037**: Thay đổi trạng thái MUST được cập nhật theo thời gian thực mà không cần tải lại trang, từ một nguồn trạng thái duy nhất có thẩm quyền; khi mất kết nối, hệ thống MUST báo dữ liệu có thể đã cũ và tự đồng bộ lại khi kết nối trở lại. Người xem chỉ nhận trạng thái và sự kiện trong phạm vi quản lý của mình, do server lọc.
 - **FR-038**: Nhấp vào nhân vật MUST mở Employee Profile gồm tối thiểu: task hiện tại và tiến độ, công cụ đang dùng và trạng thái runtime, các trao đổi liên quan, kết quả gần nhất và lịch sử review, token và chi phí, các blocker.
@@ -258,6 +282,15 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - **FR-043**: Workflow MUST định nghĩa timeout và số lần thử lại, và xử lý task lỗi một cách tường minh.
 - **FR-044**: Sau sự cố hoặc khởi động lại, mỗi run đang chạy MUST được tiếp tục, hoặc được đánh dấu lỗi rõ ràng để người quản lý chọn tiếp tục từ kết quả đã có. Kết quả đã có MUST không bị mất và hành động đã hoàn tất MUST không bị thực hiện lại.
 - **FR-045**: Hệ thống MUST ghi nhận một số cột mốc Achievement cơ bản dựa trên sự kiện thật (tối thiểu: First Employee, First Department, task đầu tiên được phê duyệt); cột mốc MUST không được cấp chỉ vì dùng nhiều token hoặc chạy lâu và MUST không thay thế đánh giá năng suất.
+
+**CEO AI Assistant – điều hành công ty thay mặt CEO (Phase 2)**
+
+- **FR-046**: Hệ thống MUST cung cấp mẫu vai trò `ceo_assistant` để tạo CEO AI Assistant. Mỗi công ty có tối đa một CEO AI Assistant đang hoạt động trong v1.0. Trợ lý là AI Employee thường (FR-011), manager trực tiếp MUST là CEO (người thật), được cấu hình model, chỉ dẫn vai trò và công cụ theo FR-009, FR-010, FR-012, được tạm ngưng/lưu trữ theo FR-008 và thuộc cấp công ty (không bắt buộc thuộc một Department); nhân vật hiển thị ở CEO Office.
+- **FR-047**: Mỗi yêu cầu điều hành CEO gửi cho trợ lý MUST được ghi thành một Task (người giao là CEO, assignee là trợ lý) để trao đổi gắn với task theo FR-022; CEO chỉ cần nêu mục tiêu, trợ lý đề xuất acceptance criteria, deadline, priority và đầu ra mong đợi để CEO xác nhận hoặc chỉnh trước khi chạy. Task của trợ lý MUST đi đủ vòng đời FR-020a, kể cả AI Manager xác nhận (FR-015), AI Manager review độc lập (FR-018) và Human Approval của CEO (FR-019); trợ lý MUST NOT review hay phê duyệt kết quả của chính mình.
+- **FR-048**: Trợ lý MUST thực thi trực tiếp các nhóm công việc điều hành sau, thông qua các thao tác hợp lệ của hệ thống (không truy cập tắt vào dữ liệu): (a) nắm tình hình – tổng hợp Company Dashboard, task, blocker, chi phí và ngân sách thành báo cáo lưu dưới dạng artifact, chỉ dựa trên dữ liệu thật; (b) giao việc thay mặt CEO – tạo và giao task cho AI Employee, Team hoặc Department; nếu tiêu chí nghiệm thu do CEO nêu trong yêu cầu thì giao ngay, nếu do trợ lý đề xuất thì task MUST giữ ở Draft chờ CEO xác nhận, và việc phân rã, phân công vẫn do AI Manager thực hiện theo FR-016; (c) cơ cấu và nhân sự AI – tạo, đổi tên, sắp xếp lại Division/Department/Team, tạo và chỉnh sửa AI Employee từ mẫu vai trò với công cụ mặc định của mẫu, tạm ngưng hoặc kích hoạt lại nhân viên; (d) blocker và escalation – đề xuất phương án tiếp tục hoặc hủy kèm lý do, quyết định vẫn thuộc người quản lý (FR-023); (e) chi phí – theo dõi mức sử dụng, nêu cảnh báo và đề xuất điều chỉnh giới hạn, không tự thay đổi giới hạn.
+- **FR-049**: Mọi hành động điều hành của trợ lý MUST được gán một mức quyền theo FR-024; hành động điều hành chưa phân loại MUST là Restricted. Phân loại tối thiểu: (a) Auto Execute – thao tác chỉ đọc trong phạm vi quyền của CEO và soạn báo cáo/bản nháp thành artifact; (b) Review Required – tạo và giao task thay mặt CEO, tạo/đổi tên/sắp xếp lại đơn vị tổ chức, tạo/chỉnh sửa/tạm ngưng/kích hoạt lại AI Employee từ mẫu, vì đều hoàn tác được; kết quả được AI Manager xem xét ở bước In Review; (c) Human Approval – xóa/lưu trữ Division/Department/Team/AI Employee, hủy task đang chạy và mọi hành động nhạy cảm theo FR-025, kể cả khi adapter ở chế độ sandbox/dry-run; (d) Restricted – phê duyệt, từ chối hoặc yêu cầu làm lại kết quả task, quyết định yêu cầu phê duyệt, quyết định tiếp tục hoặc hủy task Blocked/Error, đặt hoặc nâng giới hạn token/ngân sách/model được phép, đổi Action Policy, cấp thêm công cụ hoặc credential cho bất kỳ nhân viên nào (kể cả chính trợ lý), gán hoặc gỡ quyền quản lý và tài khoản người thật.
+- **FR-050**: Quyền của trợ lý MUST không vượt quá quyền của CEO và MUST được cưỡng chế phía server trên mọi yêu cầu theo FR-028 và FR-029, chỉ trong phạm vi công ty của CEO. Chỉ dẫn nằm trong nội dung task, artifact hay dữ liệu đầu vào MUST không mở rộng quyền của trợ lý; việc phân loại mức quyền không phụ thuộc câu chữ trong prompt (FR-025).
+- **FR-051**: Mọi hành động điều hành của trợ lý MUST được ghi lại là "thực hiện bởi CEO AI Assistant thay mặt CEO" kèm yêu cầu nguồn, task nguồn, hành động, mức quyền, kết quả và thời điểm, truy vấn được theo FR-042. Task do trợ lý tạo MUST ghi nhận cả người giao (CEO) lẫn tác nhân tạo (trợ lý). Token và chi phí của trợ lý được đo theo FR-032 và chịu giới hạn, cảnh báo, chặn theo FR-031 và FR-033 như mọi nhân viên khác.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -278,6 +311,7 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - **Office Zone**: khu vực trong Virtual Office gắn với phòng ban, cùng vị trí nhân vật.
 - **Notification**: thông báo trong ứng dụng gửi người quản lý về các sự kiện ở FR-041 và cảnh báo ngân sách, có trạng thái đã đọc/chưa đọc.
 - **Milestone**: cột mốc Achievement cơ bản gắn với sự kiện thật. `Milestone` chỉ là tên trong code; giao diện hiển thị là Achievement.
+- **CEO AI Assistant**: AI Employee tạo từ mẫu `ceo_assistant`, manager trực tiếp là CEO, thực thi các thao tác điều hành thay mặt CEO trong phạm vi quyền của CEO; mỗi yêu cầu điều hành là một Task, mỗi hành động được ghi kèm mức quyền và dấu "thay mặt CEO" trong Execution Record.
 
 ## Success Criteria *(mandatory)*
 
@@ -296,7 +330,10 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - **SC-011**: Người quản lý xác định được nguyên nhân thất bại của một task từ lịch sử thực thi trong vòng 2 phút.
 - **SC-012**: Trong kiểm thử với hai công ty riêng biệt, 0 yêu cầu truy cập chéo dữ liệu thành công; mọi yêu cầu ngoài phạm vi quản lý bị từ chối.
 - **SC-013**: Ít nhất 90% người dùng thử hoàn thành luồng từ giao task đến phê duyệt kết quả đầu tiên trong vòng 10 phút ở lần thử đầu. Đo trên tối thiểu 10 người thử chưa từng dùng sản phẩm.
-- **SC-014**: Mỗi task đã hoàn thành có thể truy ra đầy đủ chuỗi: ai giao, ai thực hiện, ai review, ai phê duyệt, lý do và thời điểm, trong 100% trường hợp.
+- **SC-014**: Mỗi task đã hoàn thành có thể truy ra đầy đủ chuỗi: ai giao, ai thực hiện, ai review, ai phê duyệt, lý do và thời điểm, trong 100% trường hợp; với task do CEO AI Assistant tạo thì thêm tác nhân tạo thay mặt CEO.
+- **SC-015**: Trong bộ kiểm thử CEO AI Assistant, 100% hành động thuộc mức Human Approval bị giữ lại cho đến khi có phê duyệt và 100% hành động thuộc mức Restricted hoặc chưa phân loại bị từ chối, kể cả khi nội dung task hay artifact cố ép trợ lý bỏ qua; 0 trường hợp trợ lý tự phê duyệt kết quả hoặc nâng giới hạn của chính mình.
+- **SC-016**: Ít nhất 90% người dùng thử giao được một việc cho một Team thông qua CEO AI Assistant (từ lúc nhập yêu cầu đến khi task vào Assigned) trong vòng 2 phút ở lần thử đầu. Đo trên tối thiểu 10 người thử chưa từng dùng sản phẩm.
+- **SC-017**: 100% hành động điều hành của CEO AI Assistant truy ra được yêu cầu nguồn, mức quyền áp dụng và kết quả trong lịch sử thực thi; báo cáo tình hình công ty của trợ lý khớp số liệu Company Dashboard với sai lệch không quá 1%.
 
 ## Assumptions
 
@@ -305,7 +342,8 @@ Người dùng nhận một số cột mốc (Achievement cơ bản) khi đạt 
 - **Xác thực**: dùng cơ chế đăng nhập tiêu chuẩn cho ứng dụng web; chi tiết cơ chế để bước plan quyết định.
 - **Cơ chế thực thi và nhà cung cấp AI**: yêu cầu có quyền truy cập ít nhất một nhà cung cấp model AI và người dùng cung cấp khu vực làm việc mà AI được phép dùng (ví dụ kho mã nguồn, thư mục tài liệu). Các hành động nhạy cảm (gửi email, xóa dữ liệu, deploy) trong v1.0 chạy qua adapter sandbox/dry-run theo mặc định; v1.0 chỉ giao adapter dry-run; tích hợp thật với email/CI-CD không phải điều kiện hoàn thành v1.0, và chế độ live báo lỗi cho đến khi có adapter thật được cấu hình tường minh. Khả năng của Claude/Claude Code mà plan dựa vào phải được kiểm chứng với tài liệu chính thức hiện hành trước khi chốt.
 - **Cấu hình mặc định**: ngưỡng cảnh báo ngân sách mặc định 80%; công ty chưa có chính sách ngân sách áp hạn mức mặc định 20 USD và 2.000.000 token mỗi tháng, không bao giờ coi là không giới hạn; số lần làm lại tối đa trước khi chuyển lên người thật mặc định 3; số lần thử lại và timeout có giá trị mặc định cấu hình được. Có thể điều chỉnh ở bước clarify/plan.
-- **Mẫu vai trò**: v1.0 cung cấp mẫu cho AI Developer, AI Business Analyst, AI QA Engineer và AI Manager; các vai trò khác (Marketing, HR, Finance) là tùy chỉnh.
+- **Mẫu vai trò**: v1.0 cung cấp mẫu cho AI Developer, AI Business Analyst, AI QA Engineer, AI Manager và CEO AI Assistant; các vai trò khác (Marketing, HR, Finance) là tùy chỉnh.
+- **CEO AI Assistant**: trợ lý là tùy chọn (CEO tạo khi cần, không tự tạo cùng công ty) và không tính vào mục tiêu 5–10 AI Employee của SC-001. Trong v1.0 trợ lý chỉ hành động khi CEO gửi yêu cầu (không chủ động chạy theo lịch, không báo cáo định kỳ vì Daily Report thuộc Phase 4), chỉ nhận yêu cầu dạng văn bản trong ứng dụng gắn với task, và chỉ dùng các thao tác sẵn có của hệ thống nên không kéo theo engine hay phạm vi mới. Trợ lý thuộc Phase 2 vì chỉ là một mẫu AI Employee bổ sung (YAGNI): mục tiêu đơn giản hóa vận hành được đáp ứng mà không thay đổi quy trình của Nguyên tắc II.
 - **Virtual Office**: khu vực gồm các phòng ban đã tạo, CEO Office và Break Room; các khu vực khác (Meeting Room, Training Room, Server Room, Project Room) và tùy chỉnh bố trí văn phòng thuộc các phase sau.
 - **Ngoài phạm vi v1.0** (thuộc Phase 4–6 hoặc xa hơn): thực thể dự án (Project), thông báo qua email/push/webhook ngoài ứng dụng, Company/Department/Team Chat, Meeting Room, Daily Report, hệ thống XP/Level đầy đủ, Reward, Office Upgrade, Game Center, nhiều loại tài sản ảo, multiplayer, quản lý đa công ty/đa người dùng đầy đủ, thanh toán/billing, giao diện isometric 3D, và mở rộng sang các ngành nghề ngoài công ty phần mềm.
 - **Dữ liệu và triển khai**: dữ liệu và kết quả của công ty được lưu giữ bền vững; cấu hình theo môi trường tách khỏi mã nguồn; ngôn ngữ giao diện mặc định là tiếng Việt, thuật ngữ sản phẩm giữ tiếng Anh. Task Center là khu vực quản lý công việc; Task Board là màn hình chính của khu vực đó.

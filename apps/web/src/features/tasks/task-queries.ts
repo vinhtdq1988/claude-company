@@ -50,6 +50,8 @@ export const useTask = (companyId: string, id: string) =>
   useQuery({
     queryKey: queryKeys.task(companyId, id),
     queryFn: () => api.get<TaskDetail>(`/companies/${companyId}/tasks/${id}`),
+    // Đề xuất của CEO AI Assistant đang soạn: làm mới theo chu kỳ ngắn cho tới khi xong (FR-047).
+    refetchInterval: (query) => (query.state.data?.proposalStatus === 'pending' ? 2_000 : false),
   });
 
 export const useTaskMessages = (companyId: string, id: string) =>

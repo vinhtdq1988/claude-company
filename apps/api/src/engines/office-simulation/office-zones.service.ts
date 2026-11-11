@@ -11,6 +11,9 @@ import { EMPLOYEE_ENGINE, ORGANIZATION_ENGINE } from '../../platform/engine-toke
 import { placeZones, type ZoneSlot } from './office-layout';
 import { OfficeRepository } from './office.repository';
 
+/** Khóa nhóm "nhân viên không có đơn vị nhà" trong `employeesByUnit`; không trùng UUID của đơn vị nào. */
+const CEO_OFFICE_KEY = 'ceo_office';
+
 const byOrder = (a: OrgChartNode, b: OrgChartNode) =>
   a.sortOrder - b.sortOrder || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
 
@@ -38,7 +41,9 @@ export class OfficeZonesService {
     const list = (await this.employees.list(ctx, {})).filter((e) => e.status !== 'archived');
     const byUnit = new Map<string, string[]>();
     for (const e of [...list].sort((a, b) => a.id.localeCompare(b.id))) {
-      byUnit.set(e.homeOrgUnitId, [...(byUnit.get(e.homeOrgUnitId) ?? []), e.id]);
+      // Nhân viên không có đơn vị nhà (CEO AI Assistant) ngồi ở CEO Office: khóa `ceo_office`.
+      const key = e.homeOrgUnitId ?? CEO_OFFICE_KEY;
+      byUnit.set(key, [...(byUnit.get(key) ?? []), e.id]);
     }
     return byUnit;
   }
@@ -69,7 +74,7 @@ export class OfficeZonesService {
     };
     visit(chart.roots);
 
-    const desired = placeZones(slots);
+    const desired = placeZones(slots, byUnit.get(CEO_OFFICE_KEY)?.length ?? 0);
     const existing = await this.repo.listZones(tx, ctx.companyId);
     const keyOf = (z: { kind: string; orgUnitId: string | null }) =>
       z.kind === 'department' ? `org_unit:${z.orgUnitId}` : z.kind;

@@ -5,7 +5,7 @@ export type SelectionCandidate = {
   id: string;
   kind: 'employee' | 'manager';
   status: 'active' | 'suspended' | 'archived';
-  homeOrgUnitId: string;
+  homeOrgUnitId: string | null;
   teamIds: string[];
   manager: ManagerRef;
 };

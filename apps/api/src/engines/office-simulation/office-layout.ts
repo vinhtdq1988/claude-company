@@ -28,13 +28,14 @@ export type PlacedZone = ZoneSlot & { layout: ZoneLayout };
  * Các zone xếp lần lượt thành từng dải `ZONES_PER_BAND` zone; chiều cao dải là zone cao nhất trong dải.
  * Cùng đầu vào luôn cho cùng kết quả (không phụ thuộc thời gian hay thứ tự thêm dữ liệu).
  */
-export function placeZones(departments: ZoneSlot[]): PlacedZone[] {
+export function placeZones(departments: ZoneSlot[], ceoDeskCount = 0): PlacedZone[] {
   const ceo: ZoneSlot = {
     key: 'ceo_office',
     kind: 'ceo_office',
     name: 'CEO Office',
     orgUnitId: null,
-    employeeCount: 0,
+    // Nhân viên không có đơn vị nhà (CEO AI Assistant) ngồi ở CEO Office; zone cao thêm khi nhiều bàn hơn sức chứa.
+    employeeCount: ceoDeskCount,
   };
   const breakRoom: ZoneSlot = {
     key: 'break_room',
@@ -45,7 +46,9 @@ export function placeZones(departments: ZoneSlot[]): PlacedZone[] {
   };
   const slots = [ceo, ...departments, breakRoom];
   const rowsOf = (slot: ZoneSlot) =>
-    slot.kind === 'department' ? zoneRowsFor(slot.employeeCount) : ZONE_MIN_ROWS;
+    slot.kind === 'department' || slot.kind === 'ceo_office'
+      ? zoneRowsFor(slot.employeeCount)
+      : ZONE_MIN_ROWS;
 
   const placed: PlacedZone[] = [];
   let bandY = 0;
@@ -69,13 +72,14 @@ export function placeZones(departments: ZoneSlot[]): PlacedZone[] {
 
 /**
  * Bàn của từng nhân viên: thứ tự tạo (UUIDv7 tăng dần theo thời gian) trong department "nhà", nên cùng một dữ liệu
- * luôn cho cùng vị trí và người xem nào cũng thấy một bố cục.
+ * luôn cho cùng vị trí và người xem nào cũng thấy một bố cục. `orgUnitId = null` là bàn ở CEO Office (nhân viên
+ * không có đơn vị nhà, tức CEO AI Assistant).
  */
 export function assignDesks(
-  employees: ReadonlyArray<{ id: string; homeOrgUnitId: string }>,
-): Map<string, { orgUnitId: string; deskIndex: number }> {
-  const next = new Map<string, number>();
-  const result = new Map<string, { orgUnitId: string; deskIndex: number }>();
+  employees: ReadonlyArray<{ id: string; homeOrgUnitId: string | null }>,
+): Map<string, { orgUnitId: string | null; deskIndex: number }> {
+  const next = new Map<string | null, number>();
+  const result = new Map<string, { orgUnitId: string | null; deskIndex: number }>();
   for (const e of [...employees].sort((a, b) => a.id.localeCompare(b.id))) {
     const deskIndex = next.get(e.homeOrgUnitId) ?? 0;
     next.set(e.homeOrgUnitId, deskIndex + 1);

@@ -94,6 +94,10 @@ const envSchema = z
     /** `true` khi API đứng sau reverse proxy (nginx): lấy IP người dùng từ `X-Forwarded-For` cho rate limit. */
     TRUST_PROXY: bool.default(false),
     ARTIFACT_CONTEXT_MAX_BYTES: z.coerce.number().int().positive().default(200_000),
+    /** Deadline tạm (giờ kể từ lúc tạo) của task yêu cầu gửi CEO AI Assistant, trước khi có đề xuất (R14 Decision 5). */
+    ASSISTANT_DEFAULT_DEADLINE_HOURS: z.coerce.number().int().positive().default(72),
+    /** Số lời gọi tool ghi tối đa trong một run của CEO AI Assistant; vượt thì tool trả `run_locked` (R14 Decision 12). */
+    ASSISTANT_MAX_OPS_PER_RUN: z.coerce.number().int().positive().default(30),
 
     EGRESS_PROXY_URL: z.string().optional(),
     SANDBOX_RUNNER_URL: z.string().optional(),

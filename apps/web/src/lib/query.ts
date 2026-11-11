@@ -26,6 +26,8 @@ export const queryKeys = {
   employees: (companyId: string) => ['company', companyId, 'employees'] as const,
   employee: (companyId: string, id: string) => ['company', companyId, 'employees', id] as const,
   workspaces: (companyId: string) => ['company', companyId, 'workspaces'] as const,
+  workspaceSettings: (companyId: string) =>
+    ['company', companyId, 'workspaces', 'settings'] as const,
   roleTemplates: ['role-templates'] as const,
   models: ['models'] as const,
   tasks: (companyId: string) => ['company', companyId, 'tasks'] as const,

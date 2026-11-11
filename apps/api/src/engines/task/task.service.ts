@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
+  CEO_ASSISTANT_TEMPLATE_KEY,
   createTaskSchema,
   DomainError,
+  taskDraftPatchSchema,
   type Artifact,
   type ArtifactInput,
   type DecompositionPlan,
@@ -17,6 +19,7 @@ import {
   type TaskAction,
   type TaskDecisionInput,
   type TaskDetail,
+  type TaskDraftPatch,
   type TaskEngine,
   type TaskFilter,
   type TaskInput,
@@ -127,7 +130,10 @@ export class TaskService implements TaskEngine {
         title: body.title,
         objective: body.objective,
         createdByMemberId: createdBy,
-        assignedByAiEmployeeId: input.assignedByAiEmployeeId ?? null,
+        // Thao tác của CEO AI Assistant thay mặt CEO: người giao vẫn là người thật, trợ lý được ghi nhận riêng (FR-050).
+        assignedByAiEmployeeId:
+          input.assignedByAiEmployeeId ??
+          (ctx.actor.kind === 'human' ? (ctx.actor.via?.employeeId ?? null) : null),
         assigneeKind: body.assignee.kind,
         assigneeId: body.assignee.id,
         deadline: new Date(body.deadline),
@@ -135,6 +141,7 @@ export class TaskService implements TaskEngine {
         acceptanceCriteria: body.acceptanceCriteria.map((text, i) => ({ id: `c${i + 1}`, text })),
         expectedOutput: body.expectedOutput,
         status: 'draft',
+        proposalStatus: input.proposalStatus ?? null,
         tokenCap: body.tokenCap ?? null,
         costCap: body.costCap === undefined ? null : String(body.costCap),
       });
@@ -152,6 +159,75 @@ export class TaskService implements TaskEngine {
       return row;
     });
     return toTask(created);
+  }
+
+  // --- sửa task nháp ---
+
+  async updateDraft(
+    ctx: RequestContext,
+    taskId: string,
+    patch: TaskDraftPatch | Record<string, never>,
+    meta?: { proposalStatus: 'ready' | 'failed' },
+  ): Promise<Task> {
+    const byUser = ctx.actor.kind === 'human';
+    if (meta && byUser) {
+      throw new DomainError('FORBIDDEN', 'Chỉ hệ thống được đặt trạng thái đề xuất');
+    }
+    let fields: TaskDraftPatch | Record<string, never> = {};
+    // Kết quả `failed` không mang trường nào; mọi trường hợp khác phải qua cùng bộ kiểm tra như lúc tạo task.
+    if (!(meta?.proposalStatus === 'failed' && Object.keys(patch).length === 0)) {
+      const parsed = taskDraftPatchSchema.safeParse(patch);
+      if (!parsed.success) {
+        throw new DomainError('TASK_FIELDS_REQUIRED', 'Trường cần sửa thiếu hoặc không hợp lệ', {
+          issues: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+        });
+      }
+      fields = parsed.data;
+    }
+    const data = fields as TaskDraftPatch;
+    const row = await inTenant(ctx, async (tx) => {
+      const current = await this.requireTask(tx, ctx, taskId, true);
+      if (current.status !== 'draft') {
+        throw new DomainError('TASK_NOT_DRAFT', 'Chỉ sửa được task ở trạng thái nháp', {
+          taskId,
+          status: current.status,
+        });
+      }
+      if (byUser && current.proposalStatus === 'pending') {
+        throw new DomainError('PROPOSAL_PENDING', 'CEO AI Assistant đang soạn đề xuất cho task này', {
+          taskId,
+        });
+      }
+      if (meta && current.proposalStatus !== 'pending') {
+        // Đề xuất đến muộn hoặc trùng (CEO đã sửa tay/chạy lại): không ghi đè.
+        throw new DomainError('CONFLICT', 'Task không còn chờ đề xuất', { taskId });
+      }
+      const updated = await this.repo.update(tx, ctx.companyId, taskId, {
+        ...(data.title !== undefined ? { title: data.title } : {}),
+        ...(data.objective !== undefined ? { objective: data.objective } : {}),
+        ...(data.deadline !== undefined ? { deadline: new Date(data.deadline) } : {}),
+        ...(data.priority !== undefined ? { priority: data.priority } : {}),
+        ...(data.acceptanceCriteria !== undefined
+          ? { acceptanceCriteria: data.acceptanceCriteria.map((text, i) => ({ id: `c${i + 1}`, text })) }
+          : {}),
+        ...(data.expectedOutput !== undefined ? { expectedOutput: data.expectedOutput } : {}),
+        ...(data.tokenCap !== undefined ? { tokenCap: data.tokenCap } : {}),
+        ...(data.costCap !== undefined
+          ? { costCap: data.costCap === null ? null : String(data.costCap) }
+          : {}),
+        ...(meta ? { proposalStatus: meta.proposalStatus } : {}),
+      });
+      if (meta) {
+        await this.events.publish(tx, ctx, {
+          type: 'task.proposal_applied',
+          aggregateKind: 'task',
+          aggregateId: taskId,
+          payload: { taskId, status: meta.proposalStatus },
+        });
+      }
+      return updated;
+    });
+    return this.withAssistantLabel(ctx, toTask(row));
   }
 
   // --- chuyển trạng thái ---
@@ -177,6 +253,12 @@ export class TaskService implements TaskEngine {
     const row = await inTenant(ctx, async (tx) => {
       const current = await this.requireTask(tx, ctx, taskId, true);
       const extra: Partial<TaskRow> = {};
+      // Giá trị tạm của task yêu cầu gửi trợ lý chưa được thay bằng đề xuất: không giao nhầm (FR-047).
+      if (action === 'assign' && current.proposalStatus === 'pending') {
+        throw new DomainError('PROPOSAL_PENDING', 'CEO AI Assistant đang soạn đề xuất cho task này', {
+          taskId,
+        });
+      }
       if (action === 'resume') {
         if (current.blockedReason === 'SUBTASK_CANCELLED') {
           throw new DomainError(
@@ -399,7 +481,7 @@ export class TaskService implements TaskEngine {
       const evidence = await this.repo.listEvidence(tx, ctx.companyId, id);
       const reviews = await this.repo.listReviews(tx, ctx.companyId, id);
       return {
-        ...toTask(row),
+        ...(await this.withAssistantLabel(ctx, toTask(row))),
         subtasks: children.map(toTask),
         dependsOn,
         decompositionPlan: row.decompositionPlan ?? null,
@@ -416,7 +498,11 @@ export class TaskService implements TaskEngine {
     const { rows, nextCursor } = await inTenant(ctx, (tx) =>
       this.repo.list(tx, ctx.companyId, filter, assignees),
     );
-    return { items: rows.map(toTask), nextCursor };
+    const items = rows.map(toTask);
+    return {
+      items: filter.withAssignerLabel ? await this.withAssistantLabels(ctx, items) : items,
+      nextCursor,
+    };
   }
 
   async getStats(
@@ -469,6 +555,41 @@ export class TaskService implements TaskEngine {
   }
 
   // --- nội bộ ---
+
+  /**
+   * Tên CEO AI Assistant đã tạo task thay người giao (`assignedByEmployee`). Task do AI Manager phân rã cũng có
+   * `assigned_by_ai_employee_id` nhưng không phải việc của trợ lý nên không gắn nhãn.
+   */
+  private async assistantLabels(
+    ctx: RequestContext,
+    ids: readonly string[],
+  ): Promise<Map<string, { id: string; name: string }>> {
+    const labels = new Map<string, { id: string; name: string }>();
+    for (const id of new Set(ids)) {
+      const employee = await this.employees.get(ctx, id).catch(() => null);
+      if (employee?.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY) {
+        labels.set(id, { id, name: employee.name });
+      }
+    }
+    return labels;
+  }
+
+  private async withAssistantLabel(ctx: RequestContext, t: Task): Promise<Task> {
+    const [labelled] = await this.withAssistantLabels(ctx, [t]);
+    return labelled ?? t;
+  }
+
+  private async withAssistantLabels(ctx: RequestContext, tasks: Task[]): Promise<Task[]> {
+    const ids = tasks.flatMap((t) => (t.assignedByAiEmployeeId ? [t.assignedByAiEmployeeId] : []));
+    if (ids.length === 0) return tasks;
+    const labels = await this.assistantLabels(ctx, ids);
+    return tasks.map((t) => ({
+      ...t,
+      assignedByEmployee: t.assignedByAiEmployeeId
+        ? (labels.get(t.assignedByAiEmployeeId) ?? null)
+        : null,
+    }));
+  }
 
   private async requireTask(
     tx: Tx,

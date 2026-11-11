@@ -359,9 +359,11 @@ export class UsageBudgetService implements BudgetService {
 
   async allowedModelsFor(
     ctx: RequestContext,
-    target: { homeOrgUnitId: string; teamIds?: string[]; employeeId?: string },
+    target: { homeOrgUnitId: string | null; teamIds?: string[]; employeeId?: string },
   ): Promise<string[] | null> {
-    const chain = await this.organization.resolveOrgUnitChain(ctx, target.homeOrgUnitId);
+    const chain = target.homeOrgUnitId
+      ? await this.organization.resolveOrgUnitChain(ctx, target.homeOrgUnitId)
+      : []; // CEO AI Assistant không thuộc đơn vị nào: chỉ chịu giới hạn của công ty và của chính nó
     const scopes: ScopeRef[] = [
       { kind: 'company', id: ctx.companyId },
       ...chain.map((id) => ({ kind: 'org_unit' as const, id })),
@@ -568,11 +570,14 @@ export class UsageBudgetService implements BudgetService {
         period,
         tokens: Number(total?.tokens ?? 0),
         costUsd: Number(total?.cost ?? 0),
-        groups: groups.map((g) => ({
-          key: String(g.key),
-          tokens: Number(g.tokens),
-          costUsd: Number(g.cost),
-        })),
+        // Chi tiêu của CEO AI Assistant có `org_unit_id` rỗng: có trong tổng toàn công ty nhưng không thuộc nhóm đơn vị nào.
+        groups: groups
+          .filter((g) => g.key !== null)
+          .map((g) => ({
+            key: String(g.key),
+            tokens: Number(g.tokens),
+            costUsd: Number(g.cost),
+          })),
       };
     });
   }
@@ -631,7 +636,9 @@ export class UsageBudgetService implements BudgetService {
 
   /** Scope áp dụng cho nhân viên: company, đơn vị nhà và tổ tiên, các team, chính nhân viên. */
   private async scopesOf(ctx: RequestContext, employee: EmployeeProfile): Promise<ScopeRef[]> {
-    const chain = await this.organization.resolveOrgUnitChain(ctx, employee.homeOrgUnitId);
+    const chain = employee.homeOrgUnitId
+      ? await this.organization.resolveOrgUnitChain(ctx, employee.homeOrgUnitId)
+      : []; // CEO AI Assistant: chỉ chịu giới hạn của công ty và của chính nó
     return [
       { kind: 'company', id: ctx.companyId },
       ...chain.map((id) => ({ kind: 'org_unit' as const, id })),

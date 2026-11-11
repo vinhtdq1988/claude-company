@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { DomainEvent } from '@claude-company/contracts';
+import type { Actor, DomainEvent } from '@claude-company/contracts';
 import type { Tx } from '@claude-company/db';
 import { domainEvent } from '@claude-company/db/schema/events';
 import { sql } from 'drizzle-orm';
@@ -33,7 +33,11 @@ export function toDomainEvent(row: DomainEventRow): DomainEvent {
  */
 @Injectable()
 export class EventPublisher {
-  async publish(tx: Tx, ctx: { companyId: string }, event: NewDomainEvent): Promise<DomainEvent> {
+  async publish(
+    tx: Tx,
+    ctx: { companyId: string; actor?: Actor },
+    event: NewDomainEvent,
+  ): Promise<DomainEvent> {
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${`domain_event:${ctx.companyId}`}, 0))`,
     );
@@ -41,6 +45,11 @@ export class EventPublisher {
       sql`select coalesce(max(seq), 0) + 1 as next from domain_event where company_id = ${ctx.companyId}`,
     );
     const seq = Number(result.rows[0]?.next ?? 1);
+    // Thao tác do CEO AI Assistant thực hiện thay mặt CEO được ghi nhận để audit (FR-050); không ảnh hưởng quyền.
+    const via = ctx.actor?.kind === 'human' ? ctx.actor.via : undefined;
+    const payload = via
+      ? { ...event.payload, actingVia: { employeeId: via.employeeId, runId: via.runId, taskId: via.taskId } }
+      : (event.payload ?? {});
     const [row] = await tx
       .insert(domainEvent)
       .values({
@@ -49,7 +58,7 @@ export class EventPublisher {
         type: event.type,
         aggregateKind: event.aggregateKind,
         aggregateId: event.aggregateId,
-        payload: event.payload ?? {},
+        payload,
       })
       .returning();
     if (!row) throw new Error('Không ghi được domain_event');

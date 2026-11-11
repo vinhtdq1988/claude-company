@@ -5,6 +5,10 @@ export const APPROVAL_ACTION_LABELS: Readonly<Record<string, string>> = {
   'deploy.staging': 'Deploy lên staging',
   'deploy.production': 'Deploy lên production',
   'workspace.git.push': 'Push lên remote',
+  // Hành động điều hành của CEO AI Assistant (chạy qua InternalOpsAdapter sau khi duyệt).
+  'org.archive': 'Lưu trữ đơn vị hoặc team',
+  'employee.archive': 'Lưu trữ AI Employee',
+  'task.cancel': 'Hủy task',
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -40,6 +44,12 @@ export function summarizeAction(actionType: string, payload: unknown): string {
       return `Deploy "${text(p.ref, 100)}" lên production`;
     case 'workspace.git.push':
       return `Push nhánh "${text(p.branch, 100)}" lên remote "${text(p.remote, 100)}"`;
+    case 'org.archive':
+      return `Lưu trữ ${p.targetKind === 'team' ? 'team' : 'đơn vị'} ${text(p.targetId, 80)}`;
+    case 'employee.archive':
+      return `Lưu trữ AI Employee ${text(p.employeeId, 80)}`;
+    case 'task.cancel':
+      return `Hủy task ${text(p.taskId, 80)}: ${text(p.reason, 160)}`;
     default:
       return `Thực hiện ${actionType}`;
   }

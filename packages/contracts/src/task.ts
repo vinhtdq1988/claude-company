@@ -60,6 +60,11 @@ export type AssigneeRef = z.infer<typeof assigneeRefSchema>;
 
 export type AcceptanceCriterion = { id: string; text: string };
 
+/** Trạng thái đề xuất của task yêu cầu gửi CEO AI Assistant (FR-047); null với mọi task khác. */
+export const PROPOSAL_STATUSES = ['pending', 'ready', 'failed'] as const;
+export const proposalStatusSchema = z.enum(PROPOSAL_STATUSES);
+export type ProposalStatus = z.infer<typeof proposalStatusSchema>;
+
 export type Task = {
   id: string;
   parentTaskId: string | null;
@@ -83,6 +88,10 @@ export type Task = {
   costCap: number | null;
   completedAt: string | null;
   createdAt: string;
+  /** `pending` chặn `assign` và `PATCH` của người dùng; chỉ task yêu cầu gửi CEO AI Assistant mới có. */
+  proposalStatus: ProposalStatus | null;
+  /** AI Employee đã tạo task thay người giao (CEO AI Assistant); có khi đọc chi tiết hoặc danh sách. */
+  assignedByEmployee?: { id: string; name: string } | null;
 };
 
 export const TITLE_MAX = 200;
@@ -108,6 +117,52 @@ export type TaskInput = CreateTaskBody & {
   assignedByAiEmployeeId?: string | null;
   /** Task con kế thừa người giao từ task cha; bỏ trống thì lấy từ `ctx.actor`. */
   createdByMemberId?: string;
+  /** Chỉ hệ thống đặt (`POST /ceo-assistant/requests`): giá trị tạm đang chờ đề xuất của trợ lý. */
+  proposalStatus?: 'pending';
+};
+
+/**
+ * Body `PATCH /companies/{cid}/tasks/{id}` và đầu vào `TaskEngine.updateDraft`: chỉ task `draft` (FR-047).
+ * Mọi trường tùy chọn; phải có ít nhất một.
+ */
+export const taskDraftPatchSchema = z
+  .object({
+    title: z.string().trim().min(1).max(TITLE_MAX),
+    objective: z.string().trim().min(1).max(20_000),
+    deadline: z.iso.datetime({ offset: true }),
+    priority: taskPrioritySchema,
+    acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).min(1).max(30),
+    expectedOutput: z.string().trim().min(1).max(5_000),
+    tokenCap: z.number().int().positive().nullable(),
+    costCap: z.number().positive().nullable(),
+  })
+  .partial()
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: 'Cần ít nhất một trường để cập nhật' });
+export type TaskDraftPatch = z.infer<typeof taskDraftPatchSchema>;
+
+/** Đề xuất của CEO AI Assistant cho task yêu cầu (structured output của run `propose`, FR-047). */
+export const taskProposalSchema = z.object({
+  title: z.string().trim().min(1).max(TITLE_MAX),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(2_000)).min(1).max(30),
+  expectedOutput: z.string().trim().min(1).max(5_000),
+  deadline: z.iso.datetime({ offset: true }),
+  priority: taskPrioritySchema,
+});
+export type TaskProposal = z.infer<typeof taskProposalSchema>;
+
+/** Một thao tác điều hành của CEO AI Assistant trên task, ghép từ ledger (`GET /tasks/{id}/operations`). */
+export type TaskOperation = {
+  toolInvocationId: string;
+  actionType: string;
+  permissionLevel: 'auto_execute' | 'review_required' | 'human_approval' | 'restricted';
+  status: string;
+  summary: string;
+  targetKind?: string;
+  targetId?: string;
+  approvalRequestId?: string;
+  adapterMode?: 'dry_run' | 'live' | 'internal';
+  executedAt?: string;
 };
 
 export const taskTransitionSchema = z.object({
@@ -152,6 +207,8 @@ export type TaskFilter = {
   /** Chỉ trả task có assignee trong phạm vi quản lý này. Không đặt = không lọc (engine gọi engine). */
   scope?: ManagedScope;
   ids?: string[];
+  /** Gắn `assignedByEmployee` (tên CEO AI Assistant) vào kết quả; chỉ route HTTP bật vì tốn thêm truy vấn. */
+  withAssignerLabel?: boolean;
   /** `queue`: thứ tự chờ slot (priority giảm dần, deadline tăng dần). Mặc định: mới nhất trước. */
   order?: 'queue' | 'newest';
   cursor?: string;

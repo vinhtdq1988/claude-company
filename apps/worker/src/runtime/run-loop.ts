@@ -1,7 +1,9 @@
 import {
+  CEO_ASSISTANT_TEMPLATE_KEY,
   DomainError,
   decompositionPlanSchema,
   reviewResultSchema,
+  taskProposalSchema,
   FINAL_RUN_STATUSES,
   type AgentRunDetail,
   type BudgetService,
@@ -50,6 +52,8 @@ export const EXPECTED_TASK_STATUS: Record<RunPurpose, TaskStatus> = {
   decompose: 'assigned',
   review: 'in_review',
   synthesize: 'in_progress',
+  // Run đề xuất của CEO AI Assistant chạy trên task nháp và không đổi trạng thái task.
+  propose: 'draft',
 };
 
 /** Một lượt gọi model `messages_api` trả tối đa chừng này token. */
@@ -228,7 +232,7 @@ export class RunExecutor {
     const { deps } = this;
     const purpose = run.purpose;
     const isSdk = run.runtimeKind === 'claude_agent_sdk';
-    const structured = purpose === 'decompose' || purpose === 'review';
+    const structured = purpose === 'decompose' || purpose === 'review' || purpose === 'propose';
 
     // Thư mục làm việc riêng của run (chỉ run thực thi cần tới file).
     let workspace: RunContext['workspace'];
@@ -242,6 +246,7 @@ export class RunExecutor {
         runId: run.id,
         source,
         previousRunId: previousRun?.id ?? null,
+        workspaceRoot: source ? await deps.employees.getWorkspaceRoot(ai) : undefined,
       });
     }
 
@@ -328,7 +333,11 @@ export class RunExecutor {
       modelId: run.modelId,
       systemPrompt: systemPromptFor(employee.systemPrompt, purpose),
       input,
-      tools: structured ? [] : buildToolSpecs(employee.toolGrants, run.runtimeKind),
+      tools: structured
+        ? []
+        : buildToolSpecs(employee.toolGrants, run.runtimeKind, {
+            isCeoAssistant: employee.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY,
+          }),
       workspacePath: workspace?.dir,
       resumeSessionId,
       resumeConversation,
@@ -338,7 +347,13 @@ export class RunExecutor {
         timeoutMs: deps.config.MODEL_TIMEOUT_MS,
       },
       structuredOutput:
-        purpose === 'decompose' ? decompositionPlanSchema : purpose === 'review' ? reviewResultSchema : undefined,
+        purpose === 'decompose'
+          ? decompositionPlanSchema
+          : purpose === 'review'
+            ? reviewResultSchema
+            : purpose === 'propose'
+              ? taskProposalSchema
+              : undefined,
     };
 
     let turnReservationId: string | null = null;
@@ -473,6 +488,11 @@ export class RunExecutor {
       await this.fail(ai, run, task, 'BUDGET_EXCEEDED', 'Hết ngân sách của phạm vi áp dụng', false, 'BUDGET_EXCEEDED');
       return;
     }
+    if (state.blockedReason) {
+      // Chốt chặn của CEO AI Assistant (vượt số thao tác tối đa của một run): không thử lại, buộc CEO xem lại.
+      await this.fail(ai, run, task, state.blockedReason, state.lockReason ?? 'Run bị khóa', false, state.blockedReason);
+      return;
+    }
     if (flags.timedOut) {
       await this.fail(ai, run, task, 'TIMEOUT', 'Run vượt quá thời gian cho phép', true, undefined, 'timed_out');
       return;
@@ -507,6 +527,16 @@ export class RunExecutor {
         await deps.orchestration.applyReviewResult(ai, task.id, reviewResultSchema.parse(outcome.output));
         break;
       }
+      case 'propose': {
+        // Đề xuất sai định dạng không ném lỗi ra ngoài: `applyTaskProposal` đánh dấu `failed` để CEO sửa tay.
+        const proposal = taskProposalSchema.safeParse(outcome.output);
+        await deps.orchestration.applyTaskProposal(
+          ai,
+          task.id,
+          proposal.success ? proposal.data : { failed: true, reason: 'Đề xuất không đúng định dạng' },
+        );
+        break;
+      }
       default:
         break;
     }
@@ -537,6 +567,14 @@ export class RunExecutor {
         deps.config.RETRY_BACKOFF_MAX_MS,
       );
       await deps.orchestration.enqueueRetry(ai, run.id, delay);
+      return;
+    }
+    if (run.purpose === 'propose') {
+      // Hết lượt thử: task nháp giữ nguyên trạng thái, đề xuất `failed` để CEO sửa tay (R14 Decision 5).
+      await deps.orchestration.applyTaskProposal({ ...ai, actor: { kind: 'system' } }, task.id, {
+        failed: true,
+        reason: message,
+      });
       return;
     }
     try {

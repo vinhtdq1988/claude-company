@@ -50,6 +50,8 @@ export class RunWorkspaceManager {
     runId: string;
     source?: Pick<Workspace, 'kind' | 'mountPath' | 'defaultBranch'> | null;
     previousRunId?: string | null;
+    /** Gốc cho phép theo cài đặt của công ty; thiếu thì dùng `options.workspaceRoot`. */
+    workspaceRoot?: string;
   }): Promise<RunWorkspace> {
     const dir = this.dirOf(input.runId);
     if (await exists(dir)) {
@@ -66,7 +68,12 @@ export class RunWorkspaceManager {
         verbatimSymlinks: true,
       });
     } else if (input.source) {
-      await this.populateFromSource(dir, input.runId, input.source);
+      await this.populateFromSource(
+        dir,
+        input.runId,
+        input.source,
+        input.workspaceRoot ?? this.options.workspaceRoot,
+      );
     } else {
       await mkdir(dir, { recursive: true });
     }
@@ -90,9 +97,10 @@ export class RunWorkspaceManager {
     dir: string,
     runId: string,
     source: Pick<Workspace, 'kind' | 'mountPath' | 'defaultBranch'>,
+    workspaceRoot: string,
   ): Promise<void> {
     const mount = resolve(source.mountPath);
-    if (!isInside(this.options.workspaceRoot, mount)) {
+    if (!isInside(workspaceRoot, mount)) {
       throw new Error('Workspace nằm ngoài WORKSPACE_HOST_PATH');
     }
     if (source.kind === 'docs_folder') {

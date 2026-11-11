@@ -1,5 +1,5 @@
 import { Global, Module } from '@nestjs/common';
-import { BUDGET_SERVICE, MODEL_CATALOG } from '../engine-tokens';
+import { BUDGET_SERVICE, DASHBOARD_READER, MODEL_CATALOG } from '../engine-tokens';
 import { BudgetController } from './budget.controller';
 import { UsageBudgetService } from './budget.service';
 import { DashboardController } from './dashboard.controller';
@@ -16,7 +16,14 @@ import { ModelCatalogService } from './model-catalog.service';
     DashboardService,
     { provide: MODEL_CATALOG, useExisting: ModelCatalogService },
     { provide: BUDGET_SERVICE, useExisting: UsageBudgetService },
+    { provide: DASHBOARD_READER, useExisting: DashboardService },
   ],
-  exports: [MODEL_CATALOG, ModelCatalogService, BUDGET_SERVICE, UsageBudgetService],
+  exports: [
+    MODEL_CATALOG,
+    ModelCatalogService,
+    BUDGET_SERVICE,
+    UsageBudgetService,
+    DASHBOARD_READER,
+  ],
 })
 export class UsageBudgetModule {}

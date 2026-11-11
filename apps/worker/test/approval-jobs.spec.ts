@@ -80,7 +80,7 @@ describe('executeApprovedAction (action.execute-approved)', () => {
     expect(await executeApprovedAction(JOB, t.deps)).toBe('executed');
     expect(t.orchestration.claimToolInvocation).toHaveBeenCalledWith(expect.anything(), 'inv-1');
     expect(t.execute).toHaveBeenCalledTimes(1);
-    expect(t.execute).toHaveBeenCalledWith(PAYLOAD, 'key-1');
+    expect(t.execute).toHaveBeenCalledWith(PAYLOAD, 'key-1', expect.objectContaining({ taskId: expect.any(String) }));
     expect(t.orchestration.updateToolInvocation).toHaveBeenCalledWith(
       expect.anything(),
       'inv-1',

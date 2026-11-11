@@ -36,7 +36,7 @@ describe('buildToolSpecs', () => {
   it('mọi ActionType có runtime đều có schema và JSON Schema dạng object', () => {
     for (const def of ACTION_CATALOG.filter((a) => a.runtimes.length > 0)) {
       for (const runtime of def.runtimes) {
-        const [spec] = buildToolSpecs([def.actionType], runtime);
+        const [spec] = buildToolSpecs([def.actionType], runtime, { isCeoAssistant: def.assistantOnly === true });
         expect(spec, def.actionType).toBeDefined();
         expect(spec?.actionType).toBe(def.actionType);
         expect(spec?.inputSchema.type).toBe('object');

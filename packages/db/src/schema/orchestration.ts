@@ -18,6 +18,7 @@ export const runPurposeEnum = pgEnum('run_purpose', [
   'decompose',
   'review',
   'synthesize',
+  'propose',
 ]);
 export const runStatusEnum = pgEnum('run_status', [
   'queued',
@@ -43,7 +44,7 @@ export const toolInvocationStatusEnum = pgEnum('tool_invocation_status', [
   'failed',
   'unknown',
 ]);
-export const adapterModeEnum = pgEnum('adapter_mode', ['dry_run', 'live']);
+export const adapterModeEnum = pgEnum('adapter_mode', ['dry_run', 'live', 'internal']);
 
 /** Một lượt chạy của AI Employee. `runtime_kind`, `model_id` là ảnh chụp lúc chạy (US2-AS3). */
 export const agentRun = pgTable(

@@ -1,11 +1,12 @@
-import type {
-  CreateEmployeeInput,
-  EmployeeKind,
-  EmployeeProfile,
-  ManagerRef,
-  RoleTemplate,
-  RuntimeKind,
-  Seniority,
+import {
+  CEO_ASSISTANT_TEMPLATE_KEY,
+  type CreateEmployeeInput,
+  type EmployeeKind,
+  type EmployeeProfile,
+  type ManagerRef,
+  type RoleTemplate,
+  type RuntimeKind,
+  type Seniority,
 } from '@claude-company/contracts';
 import { ACTION_CATALOG, type ActionDefinition } from '@claude-company/policy/catalog';
 
@@ -37,13 +38,24 @@ export { AVATAR_KEYS } from '@claude-company/contracts';
 export const SENIORITIES: readonly Seniority[] = ['junior', 'middle', 'senior', 'expert'];
 export const RUNTIMES: readonly RuntimeKind[] = ['claude_agent_sdk', 'messages_api'];
 
-/** Action có thể cấp cho runtime này; `network.fetch` không runtime nào dùng được nên tự loại. */
-export function toolOptions(runtimeKind: RuntimeKind): ActionDefinition[] {
-  return ACTION_CATALOG.filter((a) => a.runtimes.includes(runtimeKind));
+/** Biểu mẫu đang tạo/sửa CEO AI Assistant: không đơn vị nhà, manager cố định là CEO, runtime/công cụ chỉ đọc. */
+export const isAssistantForm = (state: Pick<EmployeeFormState, 'roleTemplateKey'>): boolean =>
+  state.roleTemplateKey === CEO_ASSISTANT_TEMPLATE_KEY;
+
+/**
+ * Action có thể cấp cho runtime này; `network.fetch` và dòng `restricted` không runtime nào dùng được nên tự loại.
+ * Hành động điều hành chỉ dành cho CEO AI Assistant, và trợ lý không có công cụ workspace (FR-049).
+ */
+export function toolOptions(runtimeKind: RuntimeKind, forAssistant = false): ActionDefinition[] {
+  return ACTION_CATALOG.filter(
+    (a) =>
+      a.runtimes.includes(runtimeKind) &&
+      (forAssistant ? !a.actionType.startsWith('workspace.') : !a.assistantOnly),
+  );
 }
 
-const compatible = (toolGrants: string[], runtimeKind: RuntimeKind): string[] => {
-  const allowed = new Set(toolOptions(runtimeKind).map((a) => a.actionType));
+const compatible = (toolGrants: string[], runtimeKind: RuntimeKind, forAssistant = false): string[] => {
+  const allowed = new Set(toolOptions(runtimeKind, forAssistant).map((a) => a.actionType));
   return toolGrants.filter((g) => allowed.has(g));
 };
 
@@ -88,7 +100,7 @@ export function applyTemplate(
     modelId: d.modelId,
     runtimeKind: d.runtimeKind,
     systemPrompt: d.systemPrompt,
-    toolGrants: compatible(d.toolGrants, d.runtimeKind),
+    toolGrants: compatible(d.toolGrants, d.runtimeKind, template.key === CEO_ASSISTANT_TEMPLATE_KEY),
     avatarKey: d.avatarKey,
   };
 }
@@ -98,7 +110,7 @@ export function formFromProfile(p: EmployeeProfile): EmployeeFormState {
     roleTemplateKey: p.roleTemplateKey ?? '',
     name: p.name,
     position: p.position,
-    homeOrgUnitId: p.homeOrgUnitId,
+    homeOrgUnitId: p.homeOrgUnitId ?? '',
     kind: p.kind,
     seniority: p.seniority,
     personality: p.personality,
@@ -125,7 +137,12 @@ export function decodeManager(value: string): ManagerRef | null {
 /** AI Manager chỉ chạy `messages_api`; đổi loại hoặc runtime thì bỏ công cụ không còn tương thích. */
 export function changeKind(state: EmployeeFormState, kind: EmployeeKind): EmployeeFormState {
   const runtimeKind = kind === 'manager' ? 'messages_api' : state.runtimeKind;
-  return { ...state, kind, runtimeKind, toolGrants: compatible(state.toolGrants, runtimeKind) };
+  return {
+    ...state,
+    kind,
+    runtimeKind,
+    toolGrants: compatible(state.toolGrants, runtimeKind, isAssistantForm(state)),
+  };
 }
 
 export function changeRuntime(
@@ -133,7 +150,11 @@ export function changeRuntime(
   runtimeKind: RuntimeKind,
 ): EmployeeFormState {
   if (state.kind === 'manager') return state;
-  return { ...state, runtimeKind, toolGrants: compatible(state.toolGrants, runtimeKind) };
+  return {
+    ...state,
+    runtimeKind,
+    toolGrants: compatible(state.toolGrants, runtimeKind, isAssistantForm(state)),
+  };
 }
 
 export function toggleTool(state: EmployeeFormState, actionType: string): EmployeeFormState {
@@ -165,7 +186,8 @@ export function toRequestBody(state: EmployeeFormState): CreateEmployeeInput {
     name: state.name.trim(),
     avatarKey: state.avatarKey,
     position: state.position.trim(),
-    homeOrgUnitId: state.homeOrgUnitId,
+    // CEO AI Assistant là nhân viên cấp công ty: không có đơn vị nhà; manager do server ép là CEO.
+    homeOrgUnitId: isAssistantForm(state) ? null : state.homeOrgUnitId,
     kind: state.kind,
     roleTemplateKey: state.roleTemplateKey || null,
     personality: state.personality.trim(),

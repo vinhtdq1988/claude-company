@@ -59,6 +59,17 @@ Quy tắc ranh giới (kiểm bằng `eslint.config.mjs`): engine không import 
 
 Mạng `backend` và `sandbox` là `internal` (không có đường ra internet). Lệnh của agent không với tới Postgres, Redis, MinIO hay API model.
 
+### CEO AI Assistant
+
+Trợ lý điều hành tùy chọn: CEO tạo từ role template `ceo_assistant` (tối đa một trợ lý chưa lưu trữ cho mỗi công ty, manager trực tiếp luôn là CEO, không thuộc đơn vị nào nên hiển thị ở zone CEO Office) rồi nêu yêu cầu bằng ngôn ngữ tự nhiên. Trợ lý không có đường quyền riêng: nó chạy như mọi AI Employee và chỉ gọi các tool điều hành đi qua `ToolBroker` → `PermissionEngine`; thay đổi được thực hiện bằng ngữ cảnh của CEO kèm `actor.via` (chỉ để ghi `actingVia` vào `domain_event`, engine không dùng `via` để quyết định quyền và không có request nào đặt được nó).
+
+- **Luồng yêu cầu → đề xuất → xác nhận**: `POST /companies/{cid}/ceo-assistant/requests` tạo task `draft` giao cho trợ lý với `proposalStatus = pending` và xếp run `propose`; run này điền tiêu đề, tiêu chí nghiệm thu, deadline, priority, đầu ra mong đợi (`proposalStatus = ready`). CEO chỉnh qua `PATCH /tasks/{id}` rồi giao (`assign`). Từ đây task đi đúng vòng đời chung: AI Manager xác nhận → trợ lý thực hiện → AI Manager review độc lập → CEO phê duyệt. Trợ lý không bao giờ là reviewer, người duyệt hay người chọn assignee của task con.
+- **Mức quyền của thao tác điều hành** (`contracts/action-policy.md`): `company.query` là Auto Execute; `task.create`, `org.unit.upsert`, `org.team.upsert`, `employee.create|update|suspend|resume` là Review Required; `org.archive`, `employee.archive`, `task.cancel` là Human Approval; `task.decide`, `task.resume`, `approval.decide`, `budget.update`, `policy.update`, `employee.grant_tools`, `member.manage` và mọi chức năng ngoài v1.0 (Project, thông báo ngoài ứng dụng, Daily Report) là Restricted. `task.create` chỉ giao ngay khi mọi tiêu chí trích nguyên văn lời CEO; tiêu chí do trợ lý đề xuất thì task ở `draft` chờ CEO.
+- **`InternalOpsAdapter`** (`adapter_mode = internal`): sau khi CEO duyệt, hệ thống thực thi thật `org.archive`, `employee.archive`, `task.cancel` qua interface engine (không phải dry-run, không hiện nhãn "dry-run") và chỉ chạy payload khớp `payload_hash`. `lookup` coi đối tượng đã lưu trữ hoặc đã hủy là `succeeded` nên recovery sau restart không thực hiện lại. Adapter này không theo `ADAPTER_MODE`; `email.send` của trợ lý vẫn đi qua adapter dry-run như mọi nhân viên.
+- **Ranh giới**: trợ lý không thể tự nhắm vào chính mình (`ASSISTANT_SELF_TARGET`), không nhận `toolGrants`/`modelId`/`managerId` trong input của tool, bị khóa (`run_locked`) khi vượt `ASSISTANT_MAX_OPS_PER_RUN` thao tác ghi trong một run, và chịu ngân sách như mọi nhân viên (chi tiêu ghi `usage_ledger.org_unit_id = null`, tính vào tổng toàn công ty). `GET /tasks/{id}/operations` liệt kê từng thao tác và trạng thái của nó để CEO chọn `resume` hoặc `cancel` sau sự cố.
+
+**Tự tạo AI Manager cho Team (FR-016a)**: khi task giao cho một Team mà Team và department chứa nó chưa có AI Manager, hệ thống tạo `AI Manager {tên Team}` từ mẫu `ai_manager` (manager trực tiếp là người quản lý Team nếu có, không thì CEO) rồi mới phân rã. Task giao thẳng cho AI Employee và bước chọn reviewer không tự tạo AI Manager; nếu không tạo được (không có người thật hợp lệ, `allowed_models` chặn model của mẫu) thì task `blocked` với `NO_AI_MANAGER` kèm thông báo `escalation`.
+
 ## Chạy local
 
 ### Bằng Docker Compose
@@ -121,6 +132,7 @@ Giá trị mẫu ở `docker/.env.example`; kiểm tra và giá trị mặc đ�
 | Sandbox     | `SANDBOX_RUNNER_URL`, `SANDBOX_RUNNER_TOKEN`, `EGRESS_PROXY_URL`, `EGRESS_ALLOWLIST`                            | compose tự đặt URL; token ≥ 16 ký tự                                   |
 | Bảo mật     | `LOGIN_RATE_LIMIT_MAX`, `LOGIN_RATE_LIMIT_WINDOW_MS`, `TRUST_PROXY`                                             | 10 lần mỗi (IP, email) trong 15 phút; `TRUST_PROXY=true` khi sau nginx |
 | Workspace   | `WORKSPACE_HOST_PATH`, `RUN_WORKTREES_PATH`, `DRY_RUN_LOG_PATH`                                                 | thư mục dữ liệu local                                                  |
+| Trợ lý CEO  | `ASSISTANT_DEFAULT_DEADLINE_HOURS`, `ASSISTANT_MAX_OPS_PER_RUN`                                                 | 72 giờ (deadline tạm của task yêu cầu); 30 thao tác ghi mỗi run        |
 
 Giới hạn đăng nhập đếm trong bộ nhớ của từng instance API; chạy nhiều instance thì giới hạn thực tế nhân theo số instance.
 
@@ -139,6 +151,16 @@ Mọi hành động của agent phải có mức quyền; hành động không c
 7. **Tài liệu** – cập nhật `specs/001-claude-company-mvp/contracts/action-policy.md`.
 
 Hành vi agent mới phải có đo chi phí và logging (Nguyên tắc VII); mẫu pull request có mục xác nhận các điểm này.
+
+### Thêm `ActionType` điều hành cho CEO AI Assistant
+
+Làm đủ các bước 1–3 và 7 ở trên, với các điểm khác sau (hành động điều hành chỉ dành cho mẫu `ceo_assistant`, runtime `messages_api`):
+
+1. **Danh mục** – đặt `assistantOnly: true`, `runtimes: ['messages_api']` (hoặc `[]` nếu là hành động `restricted` chỉ khai báo để ledger ghi đúng tên bị từ chối). Hành động không hoàn tác được hoặc có tác dụng ra ngoài (lưu trữ, hủy) phải có `floor: 'human_approval'`; các quyết định của con người (duyệt, nâng ngân sách, cấp công cụ, quản lý thành viên) luôn khai báo `restricted`.
+2. **Input** – schema Zod trong `tool-inputs.ts` phải `strict()` và tuyệt đối không có trường `toolGrants`, `modelId`, `runtimeKind`, `systemPrompt`, `managerId`, `workspaceId`, giới hạn ngân sách, `level`, `actorId` hay `memberId`; ngữ cảnh người dùng chỉ lấy từ run (`delegatedContext`), không từ input của model.
+3. **Thực thi** – hành động Review Required: thêm handler và guard vào `apps/worker/src/tools/company-ops.ts` (guard kiểm điều kiện C1 và `ASSISTANT_SELF_TARGET` nếu nhắm được vào chính trợ lý), chỉ gọi qua interface engine. Hành động Human Approval: thêm vào `InternalOpsAdapter` (`apps/worker/src/tools/adapters/internal-ops.adapter.ts`) kèm `lookup` đối chiếu trạng thái đối tượng.
+4. **Hiển thị thao tác** – `GET /tasks/{id}/operations` lấy danh sách hành động từ `ASSISTANT_ONLY_ACTIONS` (tự theo danh mục); nếu input hoặc kết quả dùng trường định danh mới thì thêm vào `TARGET_FIELDS` trong `orchestration.service.ts`, và thêm nhãn trong `apps/web/src/i18n/vi.ts`.
+5. **Kiểm thử** – cập nhật `packages/policy/test/company-ops-catalog.spec.ts`, `apps/worker/test/company-ops-tool-specs.spec.ts`, `tests/contract/company-ops.spec.ts` và `tests/security/ceo-assistant-boundary.spec.ts` (100% hành động Human Approval bị giữ, 100% Restricted hoặc chưa phân loại bị từ chối, kể cả khi nội dung task, tin nhắn, artifact hay kết quả tool ép bỏ qua).
 
 ## Tài liệu
 
